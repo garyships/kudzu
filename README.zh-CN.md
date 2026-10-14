@@ -98,6 +98,7 @@ Cursor、Claude Desktop 等客户端的配置见 [docs/AI.md](docs/AI.md)。
 
 ```bash
 kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行
+kudzu export --store ./data --git /path/to/mirror.git --ref main   # 把 Kudzu 里 land 的内容同步回 git 镜像，也是增量的
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &

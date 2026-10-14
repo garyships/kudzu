@@ -41,6 +41,7 @@ func init() {
 		{"cache", "run a regional object cache (in memory)", cmdCache},
 		{"daemon", "run a per-node object daemon (on disk, unix socket)", cmdDaemon},
 		{"import", "import git history into a server store", cmdImport},
+		{"export", "export a ref's history from a server store to a git repository", cmdExport},
 		{"snapshot", "save a revision's objects for seeding a daemon", cmdSnapshot},
 
 		{"clone", "create a (sparse) working copy", cmdClone},

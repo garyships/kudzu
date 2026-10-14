@@ -46,7 +46,7 @@ SQLite tables:
 - `changesets(seq, id, data, created)`: the append-only log. `seq` is the log position; `/api/wal` lets indexers follow it. `created` is when the entry was last appended, for gc's grace period.
 - `refs(name, target, version)`: moving a ref is a **compare-and-swap on one row**, separate from creating changesets.
 - `derived(kind, key, value)`: a cache of derived data that any server can fill in.
-- `mapping(ns, key, value)`: git sha → changeset, for incremental imports.
+- `mapping(ns, key, value)`: git sha → changeset (`git`) and changeset → git sha (`git-export`), for incremental imports and exports.
 
 Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
 
@@ -165,6 +165,15 @@ The post's migration used a one-way git-to-Scion ingestion pipeline; Kudzu's imp
 - Shallow-clone boundary commits start history.
 
 Tests check that every imported commit's tree (modes, symlinks, file/directory swaps, merges) matches `git ls-tree`, and that first-parent blame matches `git blame --first-parent` line by line.
+
+**Export (`internal/gitexport`)** goes the other way, so teams can keep git tooling (code hosts, CI that clones, code search) running against a mirror while agents work in Kudzu. `kudzu export --store DIR --git mirror.git --ref main`:
+
+- Walks back from the ref and stops at changesets git already has: ones exported before (`mapping` namespace `git-export`, changeset → sha) or imported ones whose `extra.git` commit still maps back to them. Each candidate is checked against the target with `git cat-file --batch-check`, so exporting to a repository that lacks those commits writes them anew.
+- Streams the rest, parents first, to one `git fast-import`. A changeset already lists its changes relative to its first parent, which is exactly a fast-import commit (`from`, `merge`, `M`, `D`); deletions go first so files and directories can swap. Each distinct blob is sent once. Authors map to git identities (author and committer), messages and time zones are kept.
+- Moves the branch with `git update-ref NEW OLD`, a compare-and-swap, and only as a fast-forward unless `--force`.
+- Records both directions in `mapping`, so the next export is incremental and a later `kudzu import` of the mirror recognizes these commits instead of importing them again.
+
+Tests round-trip import → land (including a server-side merge and file/directory swaps) → export and compare every commit's tree, author and message with Kudzu's.
 
 ## 10. From the post vs Kudzu's own choices
 

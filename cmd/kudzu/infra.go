@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/garyships/kudzu/internal/gitexport"
 	"github.com/garyships/kudzu/internal/gitimport"
 	"github.com/garyships/kudzu/internal/proto"
 	"github.com/garyships/kudzu/internal/repo"
@@ -192,6 +193,39 @@ func cmdImport(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("imported %d new of %d commits in %s; %s -> %s\n", res.Imported, res.Commits, res.Elapsed, *as, res.Tip.Short())
+	return nil
+}
+
+func cmdExport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	dir := fs.String("store", "kudzu-data", "server store directory")
+	gitDir := fs.String("git", "", "git repository to write to (bare, or with the branch not checked out)")
+	ref := fs.String("ref", "main", "kudzu revision to export")
+	as := fs.String("as", "", "git branch to point at the exported tip (default: same name as --ref)")
+	force := fs.Bool("force", false, "move the branch even if it has commits kudzu lacks")
+	addJSONFlag(fs)
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	if *gitDir == "" {
+		return errors.New("--git is required")
+	}
+	if _, err := os.Stat(filepath.Join(*dir, "meta.db")); err != nil {
+		return fmt.Errorf("%s is not a kudzu store: %w", *dir, err)
+	}
+	r, closeRepo, err := openRepo(*dir, 256<<20)
+	if err != nil {
+		return err
+	}
+	defer closeRepo()
+	res, err := gitexport.Run(ctx, r, gitexport.Options{GitDir: *gitDir, Ref: *ref, Branch: *as, Force: *force})
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printJSON(res)
+	}
+	fmt.Printf("exported %s in %s; %s -> %s\n", plural(res.Exported, "new commit", "new commits"), res.Elapsed, res.Branch, res.Tip)
 	return nil
 }
 

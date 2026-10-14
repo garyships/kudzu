@@ -54,6 +54,7 @@ A single `kudzu server` is enough for experiments: point `KUDZU_REMOTE` at it di
 | `kudzu cache` | `--listen 127.0.0.1:7071`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
 | `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--upstream 127.0.0.1:7071`, `--dir $TMPDIR/kudzu-daemon`, `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. |
 | `kudzu import` | `--store kudzu-data`, `--git .`, `--ref HEAD`, `--as main` | Import git history into a server store. Incremental: commits already imported are skipped. |
+| `kudzu export` | `--store kudzu-data`, `--git PATH` (required), `--ref main`, `--as` (git branch, default same as `--ref`), `--force`, `--json` | Write the ref's history to a git repository (bare, or with the branch not checked out) and move the branch, fast-forward only unless `--force`. Incremental; imported commits map back to the originals, so exporting to the repository you imported from adds only what landed in Kudzu. |
 | `kudzu snapshot` | `--remote`, `-r main`, `--sparse a,b`, `-o kudzu-seed.frames` | Save every object of a revision, for `kudzu daemon --seed`. |
 | `kudzu stats` | `--remote` | Print a tier's statistics as JSON. |
 

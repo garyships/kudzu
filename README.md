@@ -158,6 +158,8 @@ Changesets record only what changed. Root trees, per-path history, a commit-grap
 ```bash
 # import an existing git repo (re-run any time; only new commits are ingested)
 kudzu import --store ./data --git /path/to/repo --as main
+# ...and keep a git mirror of what lands in Kudzu (also incremental)
+kudzu export --store ./data --git /path/to/mirror.git --ref main
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &

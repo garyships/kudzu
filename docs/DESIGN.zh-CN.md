@@ -46,7 +46,7 @@ SQLite 的表结构：
 - `changesets(seq, id, data, created)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅；`created` 是这一条最后一次被追加的时间，供 gc 的宽限期使用
 - `refs(name, target, version)`：**移动 ref 就是对这一行做 compare-and-swap**，和创建 changeset 完全分开
 - `derived(kind, key, value)`：派生数据缓存，任何服务端都能计算后写回
-- `mapping(ns, key, value)`：git sha 到 changeset 的映射，用来做增量导入
+- `mapping(ns, key, value)`：git sha 到 changeset（`git`）以及 changeset 到 git sha（`git-export`）的映射，用来做增量导入和导出
 
 创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
 
@@ -163,6 +163,13 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 新 blob 在 worker 池里并行做哈希、压缩、写入
 - `mapping` 表记录 git sha 到 changeset 的对应关系，重复执行只导入新提交，所以可以用来持续镜像一个 git 仓库
 - shallow clone 的边界提交会被当作历史的起点
+
+**导出（`internal/gitexport`）**方向相反：agent 在 Kudzu 里工作的同时，团队现有的 git 工具（代码托管、clone 仓库的 CI、代码搜索）可以继续对着一个镜像运行。`kudzu export --store DIR --git mirror.git --ref main`：
+
+- 从 ref 往回走，遇到 git 已有的 changeset 就停：之前导出过的（`mapping` 的 `git-export` 命名空间，changeset → sha），或者导入时的 `extra.git` 提交仍然映射回它自己的。每个候选都用 `git cat-file --batch-check` 在目标仓库里确认，所以导出到没有这些提交的仓库时会重新写出它们。
+- 其余的按父先子后的顺序，交给一个 `git fast-import` 进程。changeset 本来就是相对第一父节点列出改动，正好就是 fast-import 的提交格式（`from`、`merge`、`M`、`D`）；删除放在前面，文件和目录才能互换。相同的 blob 只发送一次。作者转换成 git 身份（author 和 committer），提交说明和时区都保留。
+- 用 `git update-ref 新值 旧值` 移动分支，这是一次 compare-and-swap，默认只允许 fast-forward，`--force` 才能覆盖。
+- 两个方向的映射都写进 `mapping`，所以下次导出是增量的，之后再从镜像 `kudzu import` 也能认出这些提交，不会重复导入。
 
 ## 10. 哪些是文章明说的，哪些是 Kudzu 自己的选择
 

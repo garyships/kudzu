@@ -12,7 +12,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 
 | Path | Responsibility |
 |---|---|
-| `cmd/kudzu/` | The single binary. `main.go` holds the command table; `up.go` is the one-process playground `kudzu up`; `infra.go` has `server`, `cache`, `daemon`, `import`, `snapshot`, `stats`; `client.go` has the working-copy, query and `write` commands; `jsonout.go` the `--json` helpers; `format.go` plural and display-width helpers; `mcp.go` is `kudzu mcp`. |
+| `cmd/kudzu/` | The single binary. `main.go` holds the command table; `up.go` is the one-process playground `kudzu up`; `infra.go` has `server`, `cache`, `daemon`, `import`, `export`, `snapshot`, `stats`; `client.go` has the working-copy, query and `write` commands; `jsonout.go` the `--json` helpers; `format.go` plural and display-width helpers; `mcp.go` is `kudzu mcp`. |
 | `internal/object/` | Content-addressed objects (blob, tree, unode), changesets, IDs and the stored form used on disk and on the wire. |
 | `internal/store/` | Storage interfaces: `Meta` (SQLite: changeset log, refs with CAS, derived data, git mapping) and `Objects` (`FS`, in-memory `Mem`, layered `Cached`). |
 | `internal/repo/` | Server-side core: derived-data engine (`derive.go`), revisions, skip list and merge base (`ancestry.go`), log/blame/diff/cat/ls (`query.go`), tree edits (`edits.go`), create, three-way merge, rebase, merge and lock-free land (`write.go`), mark-and-sweep garbage collection (`gc.go`). |
@@ -24,6 +24,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/sparse/` | Cone-mode sparse rules shared by client and server. |
 | `internal/textdiff/` | Myers diff, unified diff output, line-level three-way merge. |
 | `internal/gitimport/` | Incremental one-way import from git. |
+| `internal/gitexport/` | Incremental export of a ref's history to a git repository through `git fast-import`. |
 | `internal/lru/` | Small generic LRU. |
 | `internal/e2e/` | Full-stack tests: server → cache → daemon (unix socket) → working copies, all in one process. |
 | `install.sh`, `.goreleaser.yaml` | The curl installer and the release build; pushing a `v*` tag runs `.github/workflows/release.yml`. |
@@ -33,7 +34,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 
 ## Build and test
 
-Go 1.24+. `git` is only needed for `kudzu import` and its tests.
+Go 1.24+. `git` is only needed for `kudzu import`, `kudzu export` and their tests.
 
 ```bash
 go build -o kudzu ./cmd/kudzu      # the binary (ignored by .gitignore)
