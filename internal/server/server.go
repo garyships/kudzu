@@ -132,15 +132,16 @@ func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// Objects the client is told it need not upload are touched, so that
+	// garbage collection keeps them until the changeset that uses them exists.
 	missing := []object.ID{}
 	for _, id := range req.IDs {
-		ok, err := s.Repo.Objs.Has(r.Context(), id)
-		if err != nil {
+		err := store.Touch(r.Context(), s.Repo.Objs, id)
+		if errors.Is(err, store.ErrNotFound) {
+			missing = append(missing, id)
+		} else if err != nil {
 			s.fail(w, err)
 			return
-		}
-		if !ok {
-			missing = append(missing, id)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"missing": missing})

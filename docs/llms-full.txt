@@ -83,7 +83,8 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | `kudzu rebase` | `-d main` | Rebase the checked-out stack onto `-d` on the server and move the checkout there. No ref moves. |
 | `kudzu update [REV]` | `-r main`, `--force` | Move the checkout, rewriting only files that differ. Refuses if tracked files are modified unless `--force`, which discards local edits to tracked files (untracked files are kept). |
 | `kudzu sparse` | `show` (default), `set DIRS…`, `add DIRS…`, `remove DIRS…` | Show or change the sparse directories (`set .` means a full checkout). Refuses while tracked files are modified. |
-| `kudzu gc` | `--max-size 1GB` | Trim the local object cache. |
+| `kudzu gc` | `--max-size 1GB`, `--json` | Trim the local object cache. |
+| `kudzu gc --store DIR` | `--keep 30d`, `--dry-run`, `--json` | Server maintenance: remove changesets no ref reaches (older than `--keep`) and the objects only they used. Safe while the server runs. |
 
 ### Writing without a checkout
 

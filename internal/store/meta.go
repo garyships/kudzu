@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 
@@ -18,10 +19,18 @@ import (
 // compare-and-swap on a single row. Derived data is a cache keyed by
 // (kind, id) that any server may fill in.
 type Meta interface {
+	// AppendChangeset adds a changeset to the log, or returns the position
+	// of the existing entry. Either way the entry's Created time becomes
+	// now, so gc's grace period protects a changeset that was just
+	// (re)created.
 	AppendChangeset(ctx context.Context, id object.ID, raw []byte) (seq int64, err error)
 	GetChangeset(ctx context.Context, id object.ID) (raw []byte, seq int64, err error)
 	ResolvePrefix(ctx context.Context, hexPrefix string) (object.ID, error)
 	WAL(ctx context.Context, since int64, limit int) ([]WALEntry, error)
+	// DeleteChangesets removes the given log entries that were created
+	// before cutoff (unix seconds) and returns how many it removed. The log
+	// keeps its positions: later entries are not renumbered.
+	DeleteChangesets(ctx context.Context, ids []object.ID, cutoff int64) (int, error)
 
 	GetRef(ctx context.Context, name string) (object.ID, error)
 	ListRefs(ctx context.Context) (map[string]object.ID, error)
@@ -32,17 +41,24 @@ type Meta interface {
 
 	GetDerived(ctx context.Context, kind string, key object.ID) ([]byte, error)
 	PutDerived(ctx context.Context, kind string, key object.ID, value []byte) error
+	// DeleteDerived removes kind's values for keys and returns how many
+	// existed.
+	DeleteDerived(ctx context.Context, kind string, keys []object.ID) (int, error)
 
 	GetMapping(ctx context.Context, ns, key string) (string, error)
 	PutMapping(ctx context.Context, ns, key, value string) error
+	// Mappings calls fn for every mapping in ns ("" for all namespaces).
+	Mappings(ctx context.Context, ns string, fn func(ns, key, value string) error) error
+	DeleteMapping(ctx context.Context, ns, key string) error
 
 	Close() error
 }
 
 type WALEntry struct {
-	Seq int64
-	ID  object.ID
-	Raw []byte
+	Seq     int64
+	ID      object.ID
+	Raw     []byte
+	Created int64 // unix seconds when the entry was last appended
 }
 
 type SQLite struct {
@@ -51,9 +67,10 @@ type SQLite struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS changesets (
-	seq  INTEGER PRIMARY KEY AUTOINCREMENT,
-	id   BLOB NOT NULL UNIQUE,
-	data BLOB NOT NULL
+	seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+	id      BLOB NOT NULL UNIQUE,
+	data    BLOB NOT NULL,
+	created INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS refs (
 	name    TEXT PRIMARY KEY,
@@ -84,18 +101,76 @@ func OpenSQLite(path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrateCreated(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	return &SQLite{db: db}, nil
+}
+
+// migrateCreated adds changesets.created to stores made before gc existed.
+// Existing entries count as created now, so the first gc gives them a full
+// grace period instead of treating them as ancient.
+func migrateCreated(db *sql.DB) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('changesets')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == "created" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE changesets ADD COLUMN created INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil // another process migrated first
+		}
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE changesets SET created = ?`, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
 
 func (s *SQLite) AppendChangeset(ctx context.Context, id object.ID, raw []byte) (int64, error) {
-	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO changesets (id, data) VALUES (?, ?)`, id[:], raw); err != nil {
-		return 0, err
-	}
 	var seq int64
-	err := s.db.QueryRowContext(ctx, `SELECT seq FROM changesets WHERE id = ?`, id[:]).Scan(&seq)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO changesets (id, data, created) VALUES (?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET created = excluded.created RETURNING seq`,
+		id[:], raw, time.Now().Unix()).Scan(&seq)
 	return seq, err
+}
+
+func (s *SQLite) DeleteChangesets(ctx context.Context, ids []object.ID, cutoff int64) (int, error) {
+	n := 0
+	for _, id := range ids {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM changesets WHERE id = ? AND created < ?`, id[:], cutoff)
+		if err != nil {
+			return n, err
+		}
+		k, err := res.RowsAffected()
+		if err != nil {
+			return n, err
+		}
+		n += int(k)
+	}
+	return n, nil
 }
 
 func (s *SQLite) GetChangeset(ctx context.Context, id object.ID) ([]byte, int64, error) {
@@ -147,7 +222,7 @@ func pad(prefix string, c byte) string {
 }
 
 func (s *SQLite) WAL(ctx context.Context, since int64, limit int) ([]WALEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT seq, id, data FROM changesets WHERE seq > ? ORDER BY seq LIMIT ?`, since, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, id, data, created FROM changesets WHERE seq > ? ORDER BY seq LIMIT ?`, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +231,7 @@ func (s *SQLite) WAL(ctx context.Context, since int64, limit int) ([]WALEntry, e
 	for rows.Next() {
 		var e WALEntry
 		var id []byte
-		if err := rows.Scan(&e.Seq, &id, &e.Raw); err != nil {
+		if err := rows.Scan(&e.Seq, &id, &e.Raw, &e.Created); err != nil {
 			return nil, err
 		}
 		copy(e.ID[:], id)
@@ -234,6 +309,20 @@ func (s *SQLite) PutDerived(ctx context.Context, kind string, key object.ID, val
 	return err
 }
 
+func (s *SQLite) DeleteDerived(ctx context.Context, kind string, keys []object.ID) (int, error) {
+	n := 0
+	for _, k := range keys {
+		res, err := s.db.ExecContext(ctx, `DELETE FROM derived WHERE kind = ? AND key = ?`, kind, k[:])
+		if err != nil {
+			return n, err
+		}
+		if k, err := res.RowsAffected(); err == nil {
+			n += int(k)
+		}
+	}
+	return n, nil
+}
+
 func (s *SQLite) GetMapping(ctx context.Context, ns, key string) (string, error) {
 	var v string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM mapping WHERE ns = ? AND key = ?`, ns, key).Scan(&v)
@@ -245,5 +334,28 @@ func (s *SQLite) GetMapping(ctx context.Context, ns, key string) (string, error)
 
 func (s *SQLite) PutMapping(ctx context.Context, ns, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO mapping (ns, key, value) VALUES (?, ?, ?)`, ns, key, value)
+	return err
+}
+
+func (s *SQLite) Mappings(ctx context.Context, ns string, fn func(ns, key, value string) error) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT ns, key, value FROM mapping WHERE ? = '' OR ns = ? ORDER BY ns, key`, ns, ns)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n, k, v string
+		if err := rows.Scan(&n, &k, &v); err != nil {
+			return err
+		}
+		if err := fn(n, k, v); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *SQLite) DeleteMapping(ctx context.Context, ns, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mapping WHERE ns = ? AND key = ?`, ns, key)
 	return err
 }

@@ -48,3 +48,12 @@ func (c *Cache[K, V]) Add(k K, v V) {
 		delete(c.m, old.Value.(*entry[K, V]).k)
 	}
 }
+
+func (c *Cache[K, V]) Remove(k K) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.m[k]; ok {
+		c.ll.Remove(e)
+		delete(c.m, k)
+	}
+}

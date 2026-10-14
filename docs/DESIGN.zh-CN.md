@@ -43,12 +43,23 @@
 
 SQLite 的表结构：
 
-- `changesets(seq, id, data)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅
+- `changesets(seq, id, data, created)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅；`created` 是这一条最后一次被追加的时间，供 gc 的宽限期使用
 - `refs(name, target, version)`：**移动 ref 就是对这一行做 compare-and-swap**，和创建 changeset 完全分开
 - `derived(kind, key, value)`：派生数据缓存，任何服务端都能计算后写回
 - `mapping(ns, key, value)`：git sha 到 changeset 的映射，用来做增量导入
 
-创建 changeset 只需要一次 `INSERT OR IGNORE`：不加锁、不需要跨服务器协调、不碰 ref。
+创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
+
+### 垃圾回收（`internal/repo/gc.go`）
+
+CAS 竞争失败后重试的 land、遇到冲突的 rebase、从没 land 的提交，都会留下没有任何 ref 能到达的 changeset 和对象。`kudzu gc --store DIR --keep 30d` 负责回收：
+
+1. **标记**：从 ref 能到达的 changeset，以及宽限期（`--keep`）内追加的 changeset，连同它们的祖先，都是活的。活 changeset 的根 tree 及其下所有对象、根 unode 及其子节点和历史版本，都是活的。已经标记过的子树直接跳过，所以标记的开销约等于不同 tree 的数量。
+2. **清除**：删除宽限期之前、不可达的 changeset，以及它们的派生数据（`tree`、`gen`、`unode`，还有它们 unode 上的 `blame`）和指向它们的 `mapping` 行。然后删除既没被标记、在宽限期内也没被写入或 touch 过的对象，顺带清掉残留的临时文件。
+
+日志的位置永远不变：被删的条目在 `seq` 里留下空洞，`/api/wal` 的读者自然跳过，`since` 游标依然有效。用墓碑只会让日志无谓地增长。
+
+gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；重新追加的 changeset 会刷新 `created`；清除前会再检查一次每个候选对象的时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
 
 ## 3. 派生数据引擎（`internal/repo/derive.go`）
 

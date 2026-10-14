@@ -43,12 +43,23 @@ The post describes two storage roles. Both are interfaces in Kudzu:
 
 SQLite tables:
 
-- `changesets(seq, id, data)`: the append-only log. `seq` is the log position; `/api/wal` lets indexers follow it.
+- `changesets(seq, id, data, created)`: the append-only log. `seq` is the log position; `/api/wal` lets indexers follow it. `created` is when the entry was last appended, for gc's grace period.
 - `refs(name, target, version)`: moving a ref is a **compare-and-swap on one row**, separate from creating changesets.
 - `derived(kind, key, value)`: a cache of derived data that any server can fill in.
 - `mapping(ns, key, value)`: git sha → changeset, for incremental imports.
 
-Creating a changeset is one `INSERT OR IGNORE`: no locks, no cross-server coordination, no refs touched.
+Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
+
+### Garbage collection (`internal/repo/gc.go`)
+
+A land that loses its compare-and-swap race, a rebase that hits a conflict, and a commit that is never landed all leave changesets and objects that no ref reaches. `kudzu gc --store DIR --keep 30d` reclaims them:
+
+1. **Mark.** Every changeset reachable from a ref, or appended within the grace period (`--keep`), is live, and so are its ancestors. A live changeset's root tree and everything below it are live, and so is its root unode with its children and previous versions. Subtrees already marked are skipped, so marking costs about the number of distinct trees, not changesets × files.
+2. **Sweep.** Unreachable changesets older than the grace period are deleted, with their derived data (`tree`, `gen`, `unode`; `blame` for their unodes) and any `mapping` row naming them. Then every object that is neither marked nor written or touched within the grace period is deleted. Leftover temporary files go too.
+
+The log stays append-only in the sense that matters: positions never change. Removed entries leave gaps in `seq`, which `/api/wal` readers skip without noticing, so a reader's `since` cursor stays valid. Tombstones would keep growing the log for no reader's benefit.
+
+gc can run while the server is up. The grace period carries that: the server *touches* (bumps the mtime of) every object it tells a client it already has (`/objects/missing`) and every existing object a new changeset reuses, re-appending a changeset refreshes its `created`, and the sweep re-checks each candidate's age right before deleting it. Create checks parents against the log, not a cache, so nothing can be built on a changeset gc removed. A grace period well above the server's touch interval (10 minutes) is required for this; use `--keep 0s` only on an idle store. `--dry-run` reports what would go.
 
 ## 3. The derived-data engine (`internal/repo/derive.go`)
 

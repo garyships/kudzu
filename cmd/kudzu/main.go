@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // version is set at release time with -ldflags "-X main.version=...".
@@ -48,7 +50,7 @@ func init() {
 		{"rebase", "rebase the working copy's stack on the server", cmdRebase},
 		{"land", "land the working copy's stack onto a ref (lock-free)", cmdLand},
 		{"sparse", "show or change the sparse checkout", cmdSparse},
-		{"gc", "trim the local object cache", cmdGC},
+		{"gc", "trim the local object cache, or collect a server store (--store)", cmdGC},
 
 		{"log", "show history (of the repo, a file or a directory)", cmdLog},
 		{"blame", "show who last changed each line", cmdBlame},
@@ -122,6 +124,37 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, rest[0])
 		args = rest[1:]
 	}
+}
+
+// parseDuration accepts time.ParseDuration's units plus d (days) and w
+// (weeks), e.g. 30d or 1w2d.
+func parseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty duration")
+	}
+	var total time.Duration
+	for len(s) > 0 {
+		i := strings.IndexAny(s, "dw")
+		if i < 0 {
+			d, err := time.ParseDuration(s)
+			if err != nil || d < 0 {
+				return 0, fmt.Errorf("bad duration %q", s)
+			}
+			return total + d, nil
+		}
+		n, err := strconv.ParseFloat(s[:i], 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("bad duration %q", s)
+		}
+		unit := 24 * time.Hour
+		if s[i] == 'w' {
+			unit *= 7
+		}
+		total += time.Duration(n * float64(unit))
+		s = s[i+1:]
+	}
+	return total, nil
 }
 
 func parseSize(s string) (int64, error) {
