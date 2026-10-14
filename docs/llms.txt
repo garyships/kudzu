@@ -1,6 +1,6 @@
 # Kudzu
 
-> Kudzu is an open-source version control system for monorepos where most clients are AI agents and CI jobs, written in Go. History, blame, diff, rebase and land run on the server, so agents can query history and even commit without a checkout. Clients fetch only the trees and blobs they ask for through tiers of caches, and landing is lock-free: the server rebases onto the current tip and moves the ref with compare-and-swap.
+> Git was built for humans; Kudzu is built for agents. It is open-source version control infrastructure for the agent era: a system for monorepos where most clients are AI agents and CI jobs, written in Go. History, blame, diff, rebase and land run on the server, so agents can query history and even commit without a checkout. Clients fetch only the trees and blobs they ask for through tiers of caches, and landing is lock-free: the server rebases onto the current tip and moves the ref with compare-and-swap.
 
 Try it: `curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh`, then `kudzu up` inside any git repository (imports its history and serves all tiers on `unix:///tmp/kudzu.sock`).
 

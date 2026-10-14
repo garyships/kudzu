@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kudzu — Anthropic's Scion, rebuilt in the open</title>
-<meta name="description" content="Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion and kept it internal. Kudzu is the open-source rebuild: no full clones, history and merges on the server, lock-free landing.">
+<title>Kudzu — Git was built for humans. Kudzu is built for agents.</title>
+<meta name="description" content="Version control infrastructure for the agent era. No full clones, history as an API, lock-free landing for thousands of concurrent agents. MCP-native, open source.">
 <meta name="theme-color" content="#07100b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f7faf6" media="(prefers-color-scheme: light)">
 <meta name="color-scheme" content="dark light">
@@ -15,17 +15,17 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Kudzu">
 <meta property="og:url" content="https://garyships.github.io/kudzu/">
-<meta property="og:title" content="Kudzu — Anthropic's Scion, rebuilt in the open">
-<meta property="og:description" content="Anthropic outgrew git at 30,000+ merges a day and built Scion — then kept it internal. Kudzu rebuilds it from their write-up, open source.">
+<meta property="og:title" content="Kudzu — Git was built for humans. Kudzu is built for agents.">
+<meta property="og:description" content="Every engineer is about to run a hundred agents, and git breaks first. Kudzu is version control infrastructure for the agent era. Open source.">
 <meta property="og:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Kudzu: version control for agent-scale monorepos. Server, regional cache, node daemon and agents connected by a growing vine.">
+<meta property="og:image:alt" content="Kudzu. Git was built for humans. Kudzu is built for agents. Version control infrastructure for the agent era.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Kudzu — Anthropic's Scion, rebuilt in the open">
-<meta name="twitter:description" content="Anthropic outgrew git at 30,000+ merges a day and built Scion — then kept it internal. Kudzu rebuilds it from their write-up, open source.">
+<meta name="twitter:title" content="Kudzu — Git was built for humans. Kudzu is built for agents.">
+<meta name="twitter:description" content="Every engineer is about to run a hundred agents, and git breaks first. Kudzu is version control infrastructure for the agent era. Open source.">
 <meta name="twitter:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
-<meta name="twitter:image:alt" content="Kudzu: version control for agent-scale monorepos.">
+<meta name="twitter:image:alt" content="Kudzu. Git was built for humans. Kudzu is built for agents.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -117,18 +117,19 @@
   <div class="container hero-inner">
     <a class="pill" href="https://www.anthropic.com/engineering/redesigning-source-control">
       <span class="pill-dot" aria-hidden="true"></span>
-      Read Anthropic's post on Scion
+      Anthropic hit 30,000+ merges a day. Git couldn't keep&nbsp;up.
       <svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg>
     </a>
     <h1 id="hero-title">
-      Anthropic's Scion, rebuilt in the&nbsp;<em>open</em>.
-      <span class="h1-sub">Your agents write code like kudzu&nbsp;grows.</span>
+      <span class="h1-pre">Git was built for humans.</span>
+      Kudzu is built for&nbsp;<em>agents</em>.
     </h1>
+    <p class="hero-kicker">Version control infrastructure for the agent era</p>
     <p class="hero-lead">
-      Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion, and kept it internal.
-      <strong>Kudzu rebuilds it from their write-up, in the open.</strong>
-      Clients never clone the whole repo: they ask for exactly the objects they want through tiered caches.
-      History, blame, diffs and merges run on the server, and changes land without a lock.
+      Every engineer is about to run a hundred agents. They clone, commit and merge around the clock, all at once,
+      and git is the first thing to break.
+      <strong>Kudzu rebuilds version control as infrastructure:</strong>
+      agents fetch only what they touch, history is an API, and thousands of changes land without a lock.
     </p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/garyships/kudzu">
@@ -140,9 +141,7 @@
       </a>
     </div>
     <p class="hero-note">
-      Rebuilt from Anthropic's engineering post the day after it was published.
-      <a href="https://www.anthropic.com/engineering/redesigning-source-control">Read the article</a>.
-      Unofficial; not affiliated with Anthropic.
+      Open source, MIT · one Go binary · 16 MCP tools built in
     </p>
   </div>
 
@@ -171,18 +170,41 @@
   <div class="container">
     <header class="section-head">
       <p class="eyebrow"><span>01</span> The problem</p>
-      <h2 id="problem-title">Git was built for people who go offline. Agents never&nbsp;do.</h2>
+      <h2 id="problem-title">The agent era breaks git in four&nbsp;places.</h2>
       <p class="lead">
-        Every git clone is a full replica: all of history, packed and maintained on every machine.
-        That's perfect for a laptop on a plane. It turns into a bottleneck when most clients are
-        always-online agents and CI jobs, all landing into one monorepo.
+        Git gives every clone a full replica of history, so one person on a laptop can work offline.
+        Agents are never offline, and there are about to be thousands of them per repo. Every one of
+        git's assumptions turns into a bottleneck.
       </p>
     </header>
 
+    <div class="breaks">
+      <article class="break" data-reveal>
+        <h3><span class="break-ico" aria-hidden="true">🌪️</span>Clone storm</h3>
+        <p class="break-git"><b>Git</b>Every agent sandbox and CI job pulls the entire repo and all of its history.</p>
+        <p class="break-kz"><b>Kudzu</b>Clients fetch only the objects they touch, through tiered caches. 50 identical cold requests become 1 upstream request.</p>
+      </article>
+      <article class="break" data-reveal>
+        <h3><span class="break-ico" aria-hidden="true">🚦</span>Merge jam</h3>
+        <p class="break-git"><b>Git</b>Thousands of agents race for main. Merge queues lock, pushes bounce, everyone rebases and retries.</p>
+        <p class="break-kz"><b>Kudzu</b>The server rebases and lands with a compare-and-swap on the ref. No lock, no queue, no push.</p>
+      </article>
+      <article class="break" data-reveal>
+        <h3><span class="break-ico" aria-hidden="true">🔒</span>History trapped in clones</h3>
+        <p class="break-git"><b>Git</b>To ask “who changed this line?”, an agent has to check out the repo first.</p>
+        <p class="break-kz"><b>Kudzu</b>Log, blame and diff are server APIs, and 16 MCP tools your agent can call.</p>
+      </article>
+      <article class="break" data-reveal>
+        <h3><span class="break-ico" aria-hidden="true">🪞</span>Mirror sprawl</h3>
+        <p class="break-git"><b>Git</b>Hundreds of mirrors, each a full copy, each needing repack and gc.</p>
+        <p class="break-kz"><b>Kudzu</b>Immutable, content-addressed objects behind cache tiers. No packfiles, no maintenance.</p>
+      </article>
+    </div>
+
     <div class="scale" data-reveal>
       <div class="scale-head">
-        <h3>What agent scale looked like at Anthropic</h3>
-        <p class="source">Figures from Anthropic's article <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a> (Oct&nbsp;2026), about their internal system Scion. They are not Kudzu measurements.</p>
+        <h3>Not hypothetical: it already happened at Anthropic</h3>
+        <p class="source">Figures from Anthropic's article <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a> (Oct&nbsp;2026), about Scion, the system they built to replace git. Kudzu builds that architecture in the open.</p>
       </div>
       <div class="scale-grid">
         <div class="tile tile-feature">
@@ -777,7 +799,7 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
   <div class="container">
     <header class="section-head">
       <p class="eyebrow"><span>09</span> Roadmap</p>
-      <h2 id="roadmap-title">Early, and honest about&nbsp;it.</h2>
+      <h2 id="roadmap-title">What’s next. Come build&nbsp;it.</h2>
       <p class="lead">Kudzu is a working prototype with tests end to end. These pieces are not built yet.</p>
     </header>
     <ul class="roadmap">
@@ -788,7 +810,8 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
       <li><span class="rm-dot" aria-hidden="true"></span><h3>Export back to git</h3><p>Import from git works, incrementally. Syncing back the other way doesn't yet.</p></li>
     </ul>
     <div class="final-cta">
-      <p>Kudzu is MIT licensed. Issues, ideas and pull requests are welcome.</p>
+      <p class="final-cta-title">The agent era needs new infrastructure.</p>
+      <p>Kudzu is MIT licensed. Star it, try it on your repo, and send issues, ideas and pull requests.</p>
       <div class="cta">
         <a class="btn btn-primary" href="https://github.com/garyships/kudzu"><svg class="i" aria-hidden="true"><use href="#i-github"/></svg>Star on GitHub</a>
         <a class="btn btn-secondary" href="https://github.com/garyships/kudzu/blob/main/docs/DESIGN.md">Read the design doc</a>
@@ -805,7 +828,7 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
       <a class="brand" href="#top" aria-label="Kudzu, back to top">
         <svg class="brand-mark" aria-hidden="true"><use href="#i-logo"/></svg><span>kudzu</span>
       </a>
-      <p>Open-source version control for agent-scale monorepos.</p>
+      <p>Version control infrastructure for the agent era.</p>
     </div>
     <nav class="footer-links" aria-label="Footer">
       <a href="https://github.com/garyships/kudzu">GitHub</a>
@@ -814,10 +837,9 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
       <a href="https://www.anthropic.com/engineering/redesigning-source-control">Anthropic's article</a>
     </nav>
     <p class="disclaimer">
-      Kudzu is an unofficial, open-source rebuild of the system Anthropic described in
-      <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a>.
-      It is not affiliated with or endorsed by Anthropic and contains no Anthropic code.
-      Figures attributed to that article are Anthropic's, not Kudzu's.
+      Independent open-source project. Architecture based on Anthropic's public write-up of Scion,
+      <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a>,
+      which is also the source of the Anthropic figures on this page.
     </p>
   </div>
 </footer>

@@ -4,11 +4,10 @@
 
 # Kudzu
 
-### Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion and kept it internal.<br/>Kudzu is the open-source rebuild.
+### Git was built for humans. Kudzu is built for agents.
 
-Version control for monorepos where your committers are AI agents.<br/>
-Rebuilt from Anthropic's [engineering post](https://www.anthropic.com/engineering/redesigning-source-control) the day after it was published.<br/>
-*Your agents write code like kudzu grows. Your version control should keep up.*
+**Version control infrastructure for the agent era.**<br/>
+No full clones. History as an API. Lock-free landing for thousands of concurrent agents. MCP-native.
 
 [![release](https://img.shields.io/github/v/release/garyships/kudzu?color=3fb950)](https://github.com/garyships/kudzu/releases)
 [![ci](https://github.com/garyships/kudzu/actions/workflows/ci.yml/badge.svg)](https://github.com/garyships/kudzu/actions/workflows/ci.yml)
@@ -20,9 +19,22 @@ Rebuilt from Anthropic's [engineering post](https://www.anthropic.com/engineerin
 
 <img src="docs/assets/demo.gif" alt="Kudzu demo: import git history, sparse clone, concurrent lock-free lands" width="860">
 
-<sub>⭐ If you want agent-scale version control built in the open, star the repo. It's how other people find it.</sub>
+<sub>⭐ Agents are about to outnumber the engineers who run them. If you think source control should be ready, star the repo.</sub>
 
 </div>
+
+## Agents break git
+
+Every engineer is about to run a hundred agents. They clone, commit and merge around the clock, all at once. Git was designed for one person on a laptop, and it breaks first:
+
+| | What breaks | What Kudzu does |
+|---|---|---|
+| 🌪️ **Clone storm** | Every agent sandbox and CI job pulls the entire repo and all of its history. | Clients fetch only the objects they touch, through tiered caches. 50 identical cold requests become 1 upstream request. |
+| 🚦 **Merge jam** | Thousands of agents race for `main`. Merge queues take a lock, pushes bounce, and everyone rebases and retries. | The server rebases and lands with a compare-and-swap on the ref. No lock, no queue, no push. |
+| 🔒 **History trapped in clones** | To ask "who changed this line?", an agent has to check out the repo first. | `log`, `blame` and `diff` are server APIs and [16 MCP tools](#-version-control-your-agent-can-drive). |
+| 🪞 **Mirror sprawl** | Hundreds of mirrors, each a full copy, each needing repack and gc. | Immutable, content-addressed objects behind cache tiers. No packfiles, no maintenance. |
+
+**This isn't hypothetical.** Anthropic's monorepo went from ~2,500 to 30,000+ merges a day in four months, and git couldn't keep up. They replaced it with an internal system, Scion, and [published the design](https://www.anthropic.com/engineering/redesigning-source-control). Kudzu builds that architecture in the open, for everyone. The first version shipped the day after the post.
 
 ## Try it in 60 seconds
 
@@ -66,9 +78,7 @@ Then just ask:
 
 Setup for Cursor, Claude Desktop and other clients: [docs/AI.md](docs/AI.md). There is also [`llms.txt`](https://garyships.github.io/kudzu/llms.txt) for LLMs.
 
-## Why not git?
-
-git gives every clone the whole repository so it can work offline. That's the wrong trade when nearly every client is an always-online agent and a monorepo merges tens of thousands of changes a day. Kudzu moves the heavy lifting to the server and lets clients fetch only what they need.
+## Kudzu vs git
 
 | | git | Kudzu |
 |---|---|---|
@@ -195,7 +205,7 @@ Contributions are welcome. Pick up a [help-wanted issue](https://github.com/gary
 
 ## License
 
-MIT. Kudzu is an unofficial rebuild of the system described in Anthropic's public post [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control). It is not affiliated with or endorsed by Anthropic and contains no Anthropic code.
+MIT. Independent open-source project. Architecture based on Anthropic's public write-up of Scion, [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control).
 
 ---
 

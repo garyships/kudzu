@@ -4,11 +4,10 @@
 
 # Kudzu
 
-### Anthropic 每天合并 3 万多次代码，git 扛不住，于是他们自研了 Scion，但没有开源。<br/>Kudzu 是照着他们的文章复刻的开源版。
+### Git 是给人用的，Kudzu 是给 Agent 用的。
 
-为"提交代码的主要是 AI agent"的 monorepo 设计的版本控制系统。<br/>
-在 Anthropic 发布[这篇工程文章](https://www.anthropic.com/engineering/redesigning-source-control)的第二天复刻完成。<br/>
-*你的 agent 写代码像葛藤一样疯长，版本控制得跟得上。*
+**Agent 时代的代码基础设施。**<br/>
+不用全量 clone，历史直接走 API，上千个 agent 同时提交也不用排队，原生支持 MCP。
 
 [![release](https://img.shields.io/github/v/release/garyships/kudzu?color=3fb950)](https://github.com/garyships/kudzu/releases)
 [![MCP: 16 tools](https://img.shields.io/badge/MCP-16_tools-8b5cf6)](docs/AI.md)
@@ -18,9 +17,22 @@
 
 <img src="docs/assets/demo.gif" alt="Kudzu 演示" width="860">
 
-<sub>⭐ 觉得有意思就点个 star，这是别人发现这个项目的主要方式。</sub>
+<sub>⭐ agent 的数量很快会超过管它们的程序员。如果你也觉得版本控制该为此做好准备，点个 star。</sub>
 
 </div>
+
+## Agent 正在把 git 压垮
+
+每个程序员手下很快都会有 100 个 agent，它们 24 小时不停地 clone、提交、合并，而且是同时进行。git 是为"一个人、一台笔记本"设计的，第一个扛不住的就是它：
+
+| | git 哪里会崩 | Kudzu 怎么解决 |
+|---|---|---|
+| 🌪️ **Clone 风暴** | 每个 agent 沙箱、每个 CI 任务都要拉整个仓库和全部历史 | 客户端只拉自己要用的对象，中间有多层缓存。50 个相同的冷请求，上游只收到 1 个 |
+| 🚦 **合并大堵车** | 上千个 agent 抢着往 `main` 合并：merge queue 要加锁，push 被拒，所有人 rebase 再重试 | 服务端自动 rebase，用 compare-and-swap 更新 ref。不加锁、不排队、不用 push |
+| 🔒 **历史锁在本地** | agent 想问一句"这行是谁改的"，得先 checkout 整个仓库 | `log`、`blame`、`diff` 都是服务端 API，还有 [16 个 MCP 工具](#-让你的-agent-直接操作版本控制) |
+| 🪞 **镜像泛滥** | 几百个镜像，每个都是完整副本，每个都要 repack 和 gc | 对象不可变、按内容寻址，放在多层缓存后面。没有 packfile，也不用维护 |
+
+**这不是假设。** Anthropic 的 monorepo 四个月里从每天约 2,500 次合并涨到 3 万多次，git 扛不住，他们只能自己造了 Scion，并[公开了设计](https://www.anthropic.com/engineering/redesigning-source-control)。Kudzu 把这套架构开源出来，人人可用。文章发布第二天，第一版就跑起来了。
 
 ## 60 秒上手
 
@@ -62,9 +74,7 @@ claude mcp add kudzu -e KUDZU_REMOTE=unix:///tmp/kudzu.sock -- kudzu mcp
 
 Cursor、Claude Desktop 等客户端的配置见 [docs/AI.md](docs/AI.md)。
 
-## 为什么不用 git？
-
-git 让每个 clone 都拿到完整仓库，好处是能离线工作。可是当几乎所有客户端都是永远在线的 agent、monorepo 每天要合并几万次时，这个设计就不划算了。Kudzu 把重活交给服务端，客户端只拉自己需要的东西。
+## Kudzu 和 git 对比
 
 | | git | Kudzu |
 |---|---|---|
@@ -123,4 +133,4 @@ Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入�
 
 ## 许可证
 
-MIT。Kudzu 是对 Anthropic 公开文章 [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control) 所描述系统的非官方复刻，和 Anthropic 没有关系，也没有得到 Anthropic 的背书，不包含 Anthropic 的任何代码。
+MIT。独立开源项目，架构基于 Anthropic 公开的 Scion 设计文章 [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control)。
