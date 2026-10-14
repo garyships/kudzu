@@ -143,7 +143,7 @@ func summarize(c apiChangeset) changesetSummary {
 }
 
 type resolveIn struct {
-	Rev string `json:"rev" jsonschema:"Revision to resolve: a ref name (e.g. main), a changeset ID or unique hex prefix, optionally with ~N (main~3)."`
+	Rev string `json:"rev" jsonschema:"Revision to resolve: a ref name (e.g. main), a changeset ID or unique hex prefix, optionally with ~N / ^N suffixes (main~3, main^2)."`
 }
 
 func (k *kudzu) resolveTool(ctx context.Context, in resolveIn) (*sdk.CallToolResult, error) {
@@ -454,7 +454,7 @@ func (k *kudzu) lsTool(ctx context.Context, in lsIn) (*sdk.CallToolResult, error
 }
 
 type showIn struct {
-	Rev string `json:"rev" jsonschema:"Changeset to show: a changeset ID or prefix, or a ref name (e.g. main), optionally with ~N."`
+	Rev string `json:"rev" jsonschema:"Changeset to show: a changeset ID or prefix, or a ref name (e.g. main), optionally with ~N / ^N suffixes."`
 }
 
 func (k *kudzu) showTool(ctx context.Context, in showIn) (*sdk.CallToolResult, error) {

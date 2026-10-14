@@ -36,7 +36,7 @@ type Options struct {
 // them to the model.
 const Instructions = `Kudzu is a version control system for large monorepos. History, blame, diffs, merges and rebases run on the server, so these tools never need a checkout.
 
-Revisions: a ref name (main), a changeset ID or a unique hex prefix of one (4+ characters), optionally followed by ~N for the Nth first-parent ancestor (main~3).
+Revisions: a ref name (main), a changeset ID or a unique hex prefix of one (4+ characters), optionally followed by ~N for the Nth first-parent ancestor (main~3) and ^N for the Nth parent (main^2 is a merge's second parent); suffixes chain (main~2^2~1).
 
 To change files without a checkout: read them (kudzu_cat reports the changeset it read), then call kudzu_write with parent set to that changeset ID and land set to the ref (usually main). Landing rebases onto the current tip on the server; there is no push and no merge queue. A conflict error lists the paths that both you and someone else changed: re-read them at the ref and write again.`
 

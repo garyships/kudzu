@@ -4,7 +4,7 @@
 
 Try it: `curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh`, then `kudzu up` inside any git repository (imports its history and serves all tiers on `unix:///tmp/kudzu.sock`).
 
-Agents can use Kudzu three ways: the `kudzu mcp` MCP server (tools such as `kudzu_log`, `kudzu_blame`, `kudzu_diff`, `kudzu_cat` and `kudzu_write`), the `kudzu` CLI with `--json` output, or the HTTP API directly. Revisions are a ref (`main`), a changeset ID or hex prefix, plus `~N` for first-parent ancestors. The remote comes from `--remote`, else `$KUDZU_REMOTE`, else the working copy.
+Agents can use Kudzu three ways: the `kudzu mcp` MCP server (tools such as `kudzu_log`, `kudzu_blame`, `kudzu_diff`, `kudzu_cat` and `kudzu_write`), the `kudzu` CLI with `--json` output, or the HTTP API directly. Revisions are a ref (`main`), a changeset ID or hex prefix, plus `~N` (first-parent ancestors) and `^N` (Nth parent) suffixes, chained like git (`main~2^2`). The remote comes from `--remote`, else `$KUDZU_REMOTE`, else the working copy.
 
 ## Docs
 

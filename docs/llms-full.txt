@@ -8,7 +8,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 
 - **Changeset**: the unit of work, an entry in the server's append-only log. It lists the files changed relative to its first parent (`mode: 0` means deleted). Its ID is the SHA-256 of its canonical JSON (64 hex characters). Creating one takes no lock and doesn't move any ref.
 - **Ref**: a name such as `main` that points at a changeset. It moves by compare-and-swap.
-- **Revision**: a ref name, a changeset ID or a unique hex prefix of at least 4 characters, optionally followed by `~N` for the Nth first-parent ancestor (`main~3`; `main~` is `main~1`).
+- **Revision**: a ref name, a changeset ID or a unique hex prefix of at least 4 characters, optionally followed by git-style suffixes, applied left to right: `~N` for the Nth first-parent ancestor (`main~3`; `main~` is `main~1`) and `^N` for the Nth parent (`main^2` is a merge's second parent; `^` is `^1`). They chain: `main~2^2~1`.
 - **Land**: put a changeset (and its unlanded ancestors) on a ref. The server rebases it onto the ref's current tip and compare-and-swaps the ref, retrying if it loses a race. There is no merge queue and no global lock. Overlapping edits fail with HTTP 409 and the conflicting paths. The three-way merge is conservative: adjacent edits count as a conflict too.
 - **No push**: `kudzu commit` and `kudzu write` create the changeset on the server immediately.
 - **Derived data**: root trees, per-path history (unodes), a first-parent skip list and blame are computed from changesets on the server. That is why `log PATH`, `blame` and ancestry checks are fast, and why none of them needs a checkout.

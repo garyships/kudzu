@@ -13,7 +13,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **No push.** `kudzu commit` creates the changeset on the server right away. It exists there whether or not it lands.
 - **Land, not merge.** `--land main` (or `kudzu land`) asks the server to rebase your changeset onto main's current tip and move main with compare-and-swap. No merge queue, no lock. Concurrent lands that touch different files, or separate parts of a file, all succeed. Edits to the same or adjacent lines fail with a **conflict that lists the paths**.
 - **No local branches.** A changeset is addressed by its ID. Refs like `main` are names on the server.
-- **Revisions:** a ref (`main`), a changeset ID or a unique hex prefix (4+ chars), plus `~N` for the Nth first-parent ancestor (`main~3`). Inside a working copy, `-r` defaults to the checked-out changeset. Elsewhere it defaults to `main`.
+- **Revisions:** a ref (`main`), a changeset ID or a unique hex prefix (4+ chars), plus git-style suffixes: `~N` for the Nth first-parent ancestor (`main~3`) and `^N` for the Nth parent (`main^2` is a merge's second parent), chained left to right (`main~2^2~1`). Inside a working copy, `-r` defaults to the checked-out changeset. Elsewhere it defaults to `main`.
 - **Remote:** `--remote ADDR` > `$KUDZU_REMOTE` > the working copy's recorded remote. ADDR is `host:port`, `http(s)://host:port` or `unix:///path.sock` (a node daemon).
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.

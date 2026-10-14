@@ -179,7 +179,7 @@ Tests check that every imported commit's tree (modes, symlinks, file/directory s
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/resolve?rev=` | revision → changeset + root tree (a ref or ID prefix, optionally with `~N`) |
+| GET | `/api/resolve?rev=` | revision → changeset + root tree (a ref or ID prefix, optionally with `~N` / `^N` suffixes, e.g. `main~2^2`) |
 | GET | `/api/changesets/{rev}` | changeset details |
 | POST | `/api/changesets` | create a changeset; optional `"land": "main"` lands it in the same call |
 | GET | `/api/log?rev=&path=&limit=` | first-parent history, or a path's history |

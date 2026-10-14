@@ -169,7 +169,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/resolve?rev=` | 版本号 → changeset + root tree。版本号可以是 ref、ID 前缀，后面可以加 `~N` |
+| GET | `/api/resolve?rev=` | 版本号 → changeset + root tree。版本号可以是 ref、ID 前缀，后面可以加 `~N` / `^N` 后缀（如 `main~2^2`） |
 | GET | `/api/changesets/{rev}` | changeset 详情 |
 | POST | `/api/changesets` | 创建 changeset；可选 `"land": "main"`，同一次调用里直接 land |
 | GET | `/api/log?rev=&path=&limit=` | 第一父链历史，或某个路径的历史 |
