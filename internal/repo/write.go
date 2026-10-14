@@ -53,9 +53,10 @@ type Created struct {
 // repository, and it takes no locks: refs are moved separately.
 func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) {
 	for _, p := range req.Parents {
-		// Ask the log rather than the cache: garbage collection may have
-		// removed a changeset this process still remembers.
-		if _, _, err := r.Meta.GetChangeset(ctx, p); err != nil {
+		// Ask the log rather than the cache (garbage collection may have
+		// removed a changeset this process still remembers), and touch the
+		// parent so that gc keeps it now that something builds on it.
+		if err := r.Meta.TouchChangeset(ctx, p); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, fmt.Errorf("%w: unknown parent %s", ErrInvalid, p.Short())
 			}

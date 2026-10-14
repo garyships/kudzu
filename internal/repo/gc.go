@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,52 +59,42 @@ func (r *Repo) GC(ctx context.Context, opts GCOptions) (*GCResult, error) {
 	cutoff := now.Add(-opts.Keep)
 	res := &GCResult{DryRun: opts.DryRun}
 
-	// Read the whole log. Changesets appended after this point are newer
-	// than the cutoff, so they are never candidates.
+	// Read the whole log.
 	all := map[object.ID]*gcChangeset{}
-	for since := int64(0); ; {
-		entries, err := r.Meta.WAL(ctx, since, 10000)
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) == 0 {
-			break
-		}
-		for _, e := range entries {
-			c, err := object.DecodeChangeset(e.Raw)
-			if err != nil {
-				return nil, fmt.Errorf("changeset %s: %w", e.ID.Short(), err)
-			}
-			all[e.ID] = &gcChangeset{parents: c.Parents, created: e.Created}
-			since = e.Seq
-		}
+	lastSeq, err := r.scanLog(ctx, 0, all)
+	if err != nil {
+		return nil, err
 	}
 	res.Changesets = len(all)
 
 	// Mark: changesets reachable from refs or from anything inside the grace
 	// period, then every object those changesets use.
 	live := map[object.ID]bool{}
-	var roots []object.ID
-	for id, c := range all {
-		if c.created >= cutoff.Unix() {
-			roots = append(roots, id)
-		}
-	}
 	m := &marker{r: r, objs: map[object.ID]bool{}}
-	markRefs := func() error {
-		refs, err := r.Meta.ListRefs(ctx)
-		if err != nil {
-			return err
-		}
-		for _, id := range refs {
-			roots = append(roots, id)
-		}
+	mark := func(roots []object.ID) error {
 		for len(roots) > 0 {
 			id := roots[len(roots)-1]
 			roots = roots[:len(roots)-1]
+			if live[id] {
+				continue
+			}
 			c, ok := all[id]
-			if !ok || live[id] {
-				continue // already marked, or outside the log (shallow import)
+			if !ok {
+				// Appended since the scan, or a shallow import's missing
+				// parent: ask the log.
+				raw, _, err := r.Meta.GetChangeset(ctx, id)
+				if errors.Is(err, store.ErrNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				cs, err := object.DecodeChangeset(raw)
+				if err != nil {
+					return err
+				}
+				c = &gcChangeset{parents: cs.Parents, created: now.Unix()}
+				all[id] = c
 			}
 			live[id] = true
 			if err := m.changeset(ctx, id); err != nil {
@@ -113,55 +104,119 @@ func (r *Repo) GC(ctx context.Context, opts GCOptions) (*GCResult, error) {
 		}
 		return nil
 	}
-	if err := markRefs(); err != nil {
+	markRefs := func() error {
+		refs, err := r.Meta.ListRefs(ctx)
+		if err != nil {
+			return err
+		}
+		roots := make([]object.ID, 0, len(refs))
+		for _, id := range refs {
+			roots = append(roots, id)
+		}
+		return mark(roots)
+	}
+	var recent []object.ID
+	for id, c := range all {
+		if c.created >= cutoff.Unix() {
+			recent = append(recent, id)
+		}
+	}
+	if err := mark(recent); err != nil {
 		return nil, err
 	}
-	// Refs may have moved while we marked; pick up anything they now reach.
 	if err := markRefs(); err != nil {
 		return nil, err
 	}
 
-	var deadCS []object.ID
-	dead := map[string]bool{}
-	for id, c := range all {
-		if !live[id] && c.created < cutoff.Unix() {
-			deadCS = append(deadCS, id)
-			dead[id.String()] = true
-		}
+	type candidate struct {
+		id   object.ID
+		size int64
 	}
-	var deadObjs []object.ID
-	err := sw.Walk(ctx, func(id object.ID, size int64, mtime time.Time) error {
+	var candidates []candidate
+	err = sw.Walk(ctx, func(id object.ID, size int64, mtime time.Time) error {
 		res.Objects++
 		if !m.objs[id] && mtime.Before(cutoff) {
-			deadObjs = append(deadObjs, id)
-			if opts.DryRun {
-				res.RemovedObjects++
-				res.RemovedBytes += size
-			}
+			candidates = append(candidates, candidate{id, size})
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// Walking a large store takes a while. Mark again from whatever was
+	// appended and wherever refs moved meanwhile, right before sweeping.
+	appended := map[object.ID]*gcChangeset{}
+	if _, err := r.scanLog(ctx, lastSeq, appended); err != nil {
+		return nil, err
+	}
+	var newRoots []object.ID
+	for id, c := range appended {
+		all[id] = c
+		newRoots = append(newRoots, id)
+	}
+	if err := mark(newRoots); err != nil {
+		return nil, err
+	}
+	if err := markRefs(); err != nil {
+		return nil, err
+	}
+
+	var deadCS []object.ID
+	for id, c := range all {
+		if !live[id] && c.created < cutoff.Unix() {
+			deadCS = append(deadCS, id)
+		}
+	}
 	if opts.DryRun {
 		res.RemovedChangesets = len(deadCS)
+		for _, c := range candidates {
+			if !m.objs[c.id] {
+				res.RemovedObjects++
+				res.RemovedBytes += c.size
+			}
+		}
 		return res, nil
 	}
 
-	// Sweep: changesets first, so that nothing can be built on them while
-	// their objects go away. A changeset re-appended since the scan has a new
-	// created time and is skipped.
-	if res.RemovedChangesets, err = r.Meta.DeleteChangesets(ctx, deadCS, cutoff.Unix()); err != nil {
-		return nil, err
+	// Sweep changesets first, so that nothing can be built on them while
+	// their objects go away, and children before parents. Deletion is
+	// conditional on the entry still being old: one that something has used
+	// since (a new child or a ref move touches it) survives, and then so do
+	// its ancestors and everything it needs.
+	deleted := map[string]bool{}
+	var deletedIDs []object.ID
+	protected := map[object.ID]bool{}
+	for _, id := range childrenFirst(deadCS, all) {
+		if !protected[id] {
+			n, err := r.Meta.DeleteChangesets(ctx, []object.ID{id}, cutoff.Unix())
+			if err != nil {
+				return nil, err
+			}
+			if n == 1 {
+				deleted[id.String()] = true
+				deletedIDs = append(deletedIDs, id)
+				r.changesets.Remove(id)
+				continue
+			}
+			if _, _, err := r.Meta.GetChangeset(ctx, id); errors.Is(err, store.ErrNotFound) {
+				continue // gone already
+			} else if err != nil {
+				return nil, err
+			}
+		}
+		if err := m.changeset(ctx, id); err != nil {
+			return nil, err
+		}
+		for _, p := range all[id].parents {
+			protected[p] = true
+		}
 	}
-	for _, id := range deadCS {
-		r.changesets.Remove(id)
-	}
+	res.RemovedChangesets = len(deletedIDs)
 	type mapping struct{ ns, key string }
 	var deadMappings []mapping
 	err = r.Meta.Mappings(ctx, "", func(ns, key, value string) error {
-		if dead[key] || dead[value] {
+		if deleted[key] || deleted[value] {
 			deadMappings = append(deadMappings, mapping{ns, key})
 		}
 		return nil
@@ -176,7 +231,11 @@ func (r *Repo) GC(ctx context.Context, opts GCOptions) (*GCResult, error) {
 		res.RemovedMappings++
 	}
 	var removedObjs []object.ID
-	for _, id := range deadObjs {
+	for _, c := range candidates {
+		id := c.id
+		if m.objs[id] {
+			continue // marked since the walk
+		}
 		removed, size, err := sw.DeleteIfOlder(ctx, id, cutoff)
 		if err != nil {
 			return nil, err
@@ -192,7 +251,7 @@ func (r *Repo) GC(ctx context.Context, opts GCOptions) (*GCResult, error) {
 	// Derived data is keyed by changeset (tree, gen, unode) or by file unode
 	// (blame); removed objects that are not unodes simply match nothing.
 	for _, d := range Derivers {
-		keys := deadCS
+		keys := deletedIDs
 		if d == BlameDeriver {
 			keys = removedObjs
 		}
@@ -209,6 +268,64 @@ func (r *Repo) GC(ctx context.Context, opts GCOptions) (*GCResult, error) {
 		fs.CleanTmp(cutoff)
 	}
 	return res, nil
+}
+
+// scanLog reads the log entries after since into out and returns the last
+// position read.
+func (r *Repo) scanLog(ctx context.Context, since int64, out map[object.ID]*gcChangeset) (int64, error) {
+	for {
+		entries, err := r.Meta.WAL(ctx, since, 10000)
+		if err != nil {
+			return since, err
+		}
+		if len(entries) == 0 {
+			return since, nil
+		}
+		for _, e := range entries {
+			c, err := object.DecodeChangeset(e.Raw)
+			if err != nil {
+				return since, fmt.Errorf("changeset %s: %w", e.ID.Short(), err)
+			}
+			out[e.ID] = &gcChangeset{parents: c.Parents, created: e.Created}
+			since = e.Seq
+		}
+	}
+}
+
+// childrenFirst orders dead changesets so that each comes before its
+// parents.
+func childrenFirst(dead []object.ID, all map[object.ID]*gcChangeset) []object.ID {
+	isDead := make(map[object.ID]bool, len(dead))
+	for _, id := range dead {
+		isDead[id] = true
+	}
+	children := map[object.ID]int{}
+	for _, id := range dead {
+		for _, p := range all[id].parents {
+			if isDead[p] {
+				children[p]++
+			}
+		}
+	}
+	var ready, out []object.ID
+	for _, id := range dead {
+		if children[id] == 0 {
+			ready = append(ready, id)
+		}
+	}
+	for len(ready) > 0 {
+		id := ready[len(ready)-1]
+		ready = ready[:len(ready)-1]
+		out = append(out, id)
+		for _, p := range all[id].parents {
+			if isDead[p] {
+				if children[p]--; children[p] == 0 {
+					ready = append(ready, p)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // marker records every object a live changeset needs.

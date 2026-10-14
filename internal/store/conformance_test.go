@@ -267,6 +267,15 @@ func testMeta(t *testing.T, m Meta) {
 		t.Fatalf("wal after delete = %+v", wal)
 	}
 
+	if err := m.TouchChangeset(ctx, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.TouchChangeset(ctx, ids[0]); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("touching a deleted changeset = %v", err)
+	}
+	if err := m.CASRef(ctx, "main", object.Zero, ids[0]); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("pointing a ref at a changeset not in the log = %v", err)
+	}
 	if err := m.CASRef(ctx, "main", object.Zero, ids[1]); err != nil {
 		t.Fatal(err)
 	}
