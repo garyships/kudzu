@@ -21,6 +21,8 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/proto/` | Object protocol framing and `Remote`, the HTTP client every other package uses (`host:port`, `http(s)://…` or `unix:///path`). |
 | `internal/tier/` | Regional cache and node daemon (same code): coalesced misses, bounded upstream concurrency, snapshot seeding, `/stats`. |
 | `internal/client/` | The working copy: clone, status, commit, update, sparse, land, rebase, local diff. |
+| `internal/vfs/` | A lazily fetched, read-only view of one revision (the core of `kudzu mount`). |
+| `internal/fusefs/` | FUSE adapter for `vfs` (go-fuse); built only with `-tags fuse`, like `cmd/kudzu/mount_fuse.go`. |
 | `internal/mcp/` | MCP server (`kudzu mcp`): tools backed by the HTTP API, plus a few working-copy tools. |
 | `internal/sparse/` | Cone-mode sparse rules shared by client and server. |
 | `internal/textdiff/` | Myers diff, unified diff output, line-level three-way merge. |
@@ -43,6 +45,7 @@ gofmt -l .                         # must print nothing
 go vet ./...
 go test -race ./...                # what CI runs, together with the two above
 go test -race ./internal/mcp/      # one package
+go vet -tags fuse ./... && go test -tags fuse ./internal/fusefs/   # kudzu mount (needs /dev/fuse)
 ```
 
 To run the repo, e2e and store tests against shared backends, point them at a Postgres database and an S3-compatible bucket (each test uses its own schema or key prefix):

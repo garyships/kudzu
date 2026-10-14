@@ -34,6 +34,7 @@ type Server struct {
 	Auth  *auth.Policy
 	start time.Time
 	views *lru.Cache[viewKey, viewEntry]
+	sizes *lru.Cache[object.ID, int64]
 
 	counters proto.Counters
 	created  atomic.Int64
@@ -42,7 +43,7 @@ type Server struct {
 }
 
 func New(r *repo.Repo, logger *log.Logger) *Server {
-	return &Server{Repo: r, Log: logger, start: time.Now(), views: lru.New[viewKey, viewEntry](100_000)}
+	return &Server{Repo: r, Log: logger, start: time.Now(), views: lru.New[viewKey, viewEntry](100_000), sizes: lru.New[object.ID, int64](1_000_000)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -102,6 +103,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/diff", s.handleDiff)
 	mux.HandleFunc("GET /api/cat", s.handleCat)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
+	mux.HandleFunc("GET /api/sizes", s.handleSizes)
 	mux.HandleFunc("GET /api/ancestry", s.handleAncestry)
 	mux.HandleFunc("GET /api/refs", s.handleRefs)
 	mux.HandleFunc("POST /api/refs/{name...}", s.handleSetRef)
@@ -605,6 +607,45 @@ func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleSizes returns {name: size} for the files and symlinks directly in a
+// tree, so a lazy checkout (kudzu mount) can report exact sizes without
+// downloading contents. Like objects, a tree is addressed by ID: callers
+// with restricted read access only learn IDs of filtered trees.
+func (s *Server) handleSizes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := object.ParseID(r.URL.Query().Get("tree"))
+	if err != nil {
+		s.fail(w, fmt.Errorf("%w: %v", repo.ErrInvalid, err))
+		return
+	}
+	t, err := s.Repo.ReadTree(ctx, id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			err = fmt.Errorf("%w: %v", repo.ErrInvalid, err)
+		}
+		s.fail(w, err)
+		return
+	}
+	out := make(map[string]int64, len(t.Entries))
+	for _, e := range t.Entries {
+		if e.IsDir() || e.Mode == object.ModeGitlink {
+			continue
+		}
+		size, ok := s.sizes.Get(e.ID)
+		if !ok {
+			b, err := s.Repo.ReadBlob(ctx, e.ID)
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			size = int64(len(b))
+			s.sizes.Add(e.ID, size)
+		}
+		out[e.Name] = size
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type AncestryResponse struct {

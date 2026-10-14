@@ -162,6 +162,17 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
 
+### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）
+
+`kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` 把一个版本挂载成只读文件系统，事先什么都不下载，任务只为它真正读到的内容付费：
+
+- 目录第一次被列出、或者第一次有路径经过它时，才取它的 tree 对象；文件第一次被读时，才取它的 blob。都通过对象协议（通常是节点 daemon）获取，像其他对象一样校验，并放进本地缓存（内存，或 `--cache DIR`）。同一对象的并发读取共用一次请求。
+- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端读取它本来就有的 blob），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
+- 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
+- `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。可写挂载（`kudzu commit` 读取的 overlay）留待以后。
+
+测试会挂载一个版本，依次运行 `ls`、`ls -l`、`cat`、`grep -r`，每一步之后都检查只取了真正读到的对象。
+
 ## 9. git 导入（`internal/gitimport`）
 
 文章说他们的迁移管道是 git 到 Scion 的单向导入，这里也一样：

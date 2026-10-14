@@ -198,12 +198,9 @@ The trade-off: with no packfiles or deltas, server storage was 79 MB, against 26
 
 ## Status
 
-Kudzu is a working prototype with a test suite: `go test -race ./...`. Imports are checked against `git ls-tree` and `git blame --first-parent`. Not built yet:
-- virtualized (FUSE) checkouts
-- auth and per-directory ACLs
-- a shared multi-server backend (Postgres or Spanner, S3)
-- object GC
-- export back to git
+Kudzu is a working prototype with a test suite: `go test -race ./...`. Imports are checked against `git ls-tree` and `git blame --first-parent`, and exports round-trip back to git. Also built: per-directory access control (`kudzu server --auth`), several stateless servers on Postgres and S3-compatible storage (`--meta`, `--objects`), garbage collection (`kudzu gc --store`) and lazily fetched FUSE checkouts (`kudzu mount`, built with `-tags fuse`). Not built yet:
+- writable virtualized checkouts (`kudzu mount` is read-only for now)
+- Spanner or CockroachDB metadata stores (Postgres works today)
 
 Contributions are welcome. Pick up a [help-wanted issue](https://github.com/garyships/kudzu/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22), and see [AGENTS.md](AGENTS.md) for a map of the code.
 

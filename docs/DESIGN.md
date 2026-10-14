@@ -162,6 +162,17 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 - **Status** trusts files whose size and mtime match the index, and hashes the rest.
 - **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
 
+### Virtualized checkout (`internal/vfs`, `internal/fusefs`)
+
+`kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` presents a revision as a read-only filesystem that downloads nothing up front, so a job pays only for what it reads:
+
+- A directory's tree object is fetched the first time the directory is listed or a path through it is looked up; a file's blob, the first time the file is read. Both go through the object protocol, normally to the node daemon, are verified like any other object, and are kept in a local cache (memory, or `--cache DIR`). Concurrent reads of the same object share one fetch.
+- Trees don't record file sizes, and `stat` must report them before a file is read. `GET /api/sizes?tree=ID` returns them for one directory in one request (the server reads the blobs it already has), so `ls -l` is exact without moving any file content.
+- A revision never changes, so the kernel may cache entries, attributes and pages indefinitely (`FOPEN_KEEP_CACHE`, long timeouts). Files take their changeset's time as mtime. Sparse cones and access-control filtering apply as in a checkout.
+- `internal/vfs` has no FUSE dependency and is tested on its own; `internal/fusefs` adapts it with [go-fuse](https://github.com/hanwen/go-fuse) and is only compiled with `-tags fuse`, so the default binary does not include it. Writes (an overlay that `kudzu commit` reads) are future work.
+
+The test mounts a revision and runs `ls`, `ls -l`, `cat` and `grep -r`, checking after each that only the objects actually read were fetched.
+
 ## 9. Git import (`internal/gitimport`)
 
 The post's migration used a one-way git-to-Scion ingestion pipeline; Kudzu's importer works the same way:
@@ -226,6 +237,7 @@ The post describes permissions on individual directories, so sensitive code can 
 | GET | `/api/blame?rev=&path=` | per-line changeset, author, time |
 | GET | `/api/diff?from=&to=&path=&merge_base=1&patch=1` | changed files, optionally with a unified diff |
 | GET | `/api/cat?rev=&path=`, `/api/ls?rev=&path=` | read a file, list a directory |
+| GET | `/api/sizes?tree=` | sizes of the files directly in a tree (for `kudzu mount`) |
 | GET | `/api/ancestry?a=&b=` | merge base and ancestry |
 | GET / POST | `/api/refs`, `/api/refs/{name}` | list refs; compare-and-swap a ref |
 | POST | `/api/rebase`, `/api/merge`, `/api/land` | server-side rebase, merge, lock-free land |

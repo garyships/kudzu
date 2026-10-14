@@ -21,6 +21,19 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  # kudzu mount (FUSE) is only built with -tags fuse.
+  fuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y fuse3
+      - run: go vet -tags fuse ./...
+      - run: go build -tags fuse ./cmd/kudzu
+      - run: go test -race -tags fuse ./internal/fusefs/ ./internal/vfs/
+
   # The repo, end-to-end and store tests again, against the shared backends
   # several servers use: Postgres for metadata and S3 (MinIO) for objects.
   backends:
