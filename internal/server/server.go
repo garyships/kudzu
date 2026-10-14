@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/garyships/kudzu/internal/auth"
+	"github.com/garyships/kudzu/internal/lru"
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/proto"
 	"github.com/garyships/kudzu/internal/repo"
@@ -25,9 +27,14 @@ import (
 )
 
 type Server struct {
-	Repo  *repo.Repo
-	Log   *log.Logger
+	Repo *repo.Repo
+	Log  *log.Logger
+	// Auth, if set, requires a bearer token on every request but /healthz
+	// and enforces the policy's per-directory rules.
+	Auth  *auth.Policy
 	start time.Time
+	views *lru.Cache[viewKey, viewEntry]
+	sizes *lru.Cache[object.ID, int64]
 
 	counters proto.Counters
 	created  atomic.Int64
@@ -36,10 +43,53 @@ type Server struct {
 }
 
 func New(r *repo.Repo, logger *log.Logger) *Server {
-	return &Server{Repo: r, Log: logger, start: time.Now()}
+	return &Server{Repo: r, Log: logger, start: time.Now(), views: lru.New[viewKey, viewEntry](100_000), sizes: lru.New[object.ID, int64](1_000_000)}
 }
 
 func (s *Server) Handler() http.Handler {
+	mux := s.routes()
+	if s.Auth == nil {
+		return mux
+	}
+	return s.authenticate(mux)
+}
+
+// authenticate resolves the bearer token to a principal for the handlers.
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		token := ""
+		if h := r.Header.Get("Authorization"); h != "" {
+			t, ok := strings.CutPrefix(h, "Bearer ")
+			if !ok {
+				s.fail(w, fmt.Errorf("%w: expected an Authorization: Bearer token", auth.ErrUnauthenticated))
+				return
+			}
+			token = strings.TrimSpace(t)
+		}
+		p, err := s.Auth.Authenticate(token)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+	})
+}
+
+// writeCtx makes every changeset created under ctx check the caller's write
+// permission on each path it changes (create, rebase, merge and land).
+func writeCtx(ctx context.Context) context.Context {
+	p := auth.FromContext(ctx)
+	if p == nil {
+		return ctx
+	}
+	return repo.WithChangeCheck(ctx, p.CheckWrite)
+}
+
+func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	proto.RegisterObjectRoutes(mux, s, &s.counters)
 	mux.HandleFunc("POST /objects/missing", s.handleMissing)
@@ -53,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/diff", s.handleDiff)
 	mux.HandleFunc("GET /api/cat", s.handleCat)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
+	mux.HandleFunc("GET /api/sizes", s.handleSizes)
 	mux.HandleFunc("GET /api/ancestry", s.handleAncestry)
 	mux.HandleFunc("GET /api/refs", s.handleRefs)
 	mux.HandleFunc("POST /api/refs/{name...}", s.handleSetRef)
@@ -95,7 +146,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	var ce *repo.ConflictError
+	var de *auth.DeniedError
 	switch {
+	case errors.As(err, &de):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": de.Error(), "path": de.Path})
+	case errors.Is(err, auth.ErrUnauthenticated):
+		w.Header().Set("WWW-Authenticate", `Bearer realm="kudzu"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 	case errors.As(err, &ce):
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "conflicts": ce.Paths})
 	case errors.Is(err, store.ErrNotFound):
@@ -124,7 +181,20 @@ func decodeBody(r *http.Request, v any) error {
 	return nil
 }
 
+// checkUpload lets only principals that may write somewhere upload objects
+// or probe which ones the server has.
+func checkUpload(ctx context.Context) error {
+	if p := auth.FromContext(ctx); !p.WritesAnywhere() {
+		return &auth.DeniedError{Principal: p.Name, Action: "upload"}
+	}
+	return nil
+}
+
 func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
+	if err := checkUpload(r.Context()); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		IDs []object.ID `json:"ids"`
 	}
@@ -132,21 +202,26 @@ func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// Objects the client is told it need not upload are touched, so that
+	// garbage collection keeps them until the changeset that uses them exists.
 	missing := []object.ID{}
 	for _, id := range req.IDs {
-		ok, err := s.Repo.Objs.Has(r.Context(), id)
-		if err != nil {
+		err := store.Touch(r.Context(), s.Repo.Objs, id)
+		if errors.Is(err, store.ErrNotFound) {
+			missing = append(missing, id)
+		} else if err != nil {
 			s.fail(w, err)
 			return
-		}
-		if !ok {
-			missing = append(missing, id)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"missing": missing})
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if err := checkUpload(r.Context()); err != nil {
+		s.fail(w, err)
+		return
+	}
 	fr := proto.NewFrameReader(r.Body)
 	stored := 0
 	for {
@@ -192,7 +267,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	tree, err := s.Repo.TreeOf(ctx, id)
+	tree, err := s.treeFor(ctx, id)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -211,27 +286,49 @@ type ChangesetView struct {
 	ChangeCount int             `json:"change_count"`
 }
 
+// view describes a changeset to the caller. A caller with restricted read
+// access sees only the changes it may read, and gets a permission error for
+// a changeset that only changed paths it may not read.
 func (s *Server) view(ctx context.Context, id object.ID, full bool) (*ChangesetView, error) {
 	c, err := s.Repo.Changeset(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	v := &ChangesetView{ID: id, Changeset: c, ChangeCount: len(c.Changes)}
+	changes, ok := visibleChanges(auth.FromContext(ctx), c)
+	if !ok {
+		return nil, &auth.DeniedError{Principal: auth.FromContext(ctx).Name, Action: "read", Path: "changeset " + id.Short()}
+	}
+	v := &ChangesetView{ID: id, Changeset: c, ChangeCount: len(changes)}
 	if full {
 		_, seq, err := s.Repo.Meta.GetChangeset(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		tree, err := s.Repo.TreeOf(ctx, id)
+		tree, err := s.treeFor(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		v.Seq, v.Tree, v.Changes = seq, &tree, c.Changes
+		v.Seq, v.Tree, v.Changes = seq, &tree, changes
 		if v.Changes == nil {
 			v.Changes = []object.Change{}
 		}
 	}
 	return v, nil
+}
+
+// visibleChanges returns the changes p may read, and whether p may see the
+// changeset at all (it changed nothing, or something p may read).
+func visibleChanges(p *auth.Principal, c *object.Changeset) ([]object.Change, bool) {
+	if p.ReadsAll("") {
+		return c.Changes, true
+	}
+	var out []object.Change
+	for _, ch := range c.Changes {
+		if p.CanRead(ch.Path) {
+			out = append(out, ch)
+		}
+	}
+	return out, len(c.Changes) == 0 || len(out) > 0
 }
 
 func (s *Server) handleChangeset(w http.ResponseWriter, r *http.Request) {
@@ -260,11 +357,17 @@ type CreateResponse struct {
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := writeCtx(r.Context())
 	var req CreateRequest
 	if err := decodeBody(r, &req); err != nil {
 		s.fail(w, err)
 		return
+	}
+	if req.Land != "" {
+		if err := auth.FromContext(ctx).CheckLand(req.Land); err != nil {
+			s.fail(w, err)
+			return
+		}
 	}
 	c, err := s.Repo.Create(ctx, req.CreateRequest)
 	if err != nil {
@@ -272,6 +375,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.created.Add(1)
+	if c.Tree, err = s.viewTree(ctx, c.Tree); err != nil {
+		s.fail(w, err)
+		return
+	}
 	resp := CreateResponse{Created: *c}
 	if req.Land != "" {
 		res, err := s.Repo.Land(ctx, c.ID, req.Land)
@@ -305,24 +412,44 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := limitParam(r, 50)
-	var ids []object.ID
-	if p := strings.Trim(r.URL.Query().Get("path"), "/"); p != "" {
-		ids, err = s.Repo.PathLog(ctx, head, p, limit)
-	} else {
-		ids, err = s.Repo.Log(ctx, head, limit)
-	}
-	if err != nil {
+	path := strings.Trim(r.URL.Query().Get("path"), "/")
+	pr := auth.FromContext(ctx)
+	if err := pr.CheckSee(path); err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := make([]*ChangesetView, 0, len(ids))
-	for _, id := range ids {
-		v, err := s.view(ctx, id, false)
+	// A caller with restricted read access only sees changesets that changed
+	// something it may read; scan further back until limit of those are found.
+	out := make([]*ChangesetView, 0, limit)
+	for scan := limit; ; scan = min(scan*4, 10000) {
+		var ids []object.ID
+		if path != "" {
+			ids, err = s.Repo.PathLog(ctx, head, path, scan)
+		} else {
+			ids, err = s.Repo.Log(ctx, head, scan)
+		}
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
-		out = append(out, v)
+		out = out[:0]
+		for _, id := range ids {
+			v, err := s.view(ctx, id, false)
+			var de *auth.DeniedError
+			if errors.As(err, &de) {
+				continue
+			}
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			if out = append(out, v); len(out) == limit {
+				break
+			}
+		}
+		if len(out) == limit || len(ids) < scan || scan == 10000 {
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -340,7 +467,12 @@ func (s *Server) handleBlame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	lines, err := s.Repo.Blame(ctx, head, strings.Trim(r.URL.Query().Get("path"), "/"))
+	path := strings.Trim(r.URL.Query().Get("path"), "/")
+	if err := auth.FromContext(ctx).CheckRead(path); err != nil {
+		s.fail(w, err)
+		return
+	}
+	lines, err := s.Repo.Blame(ctx, head, path)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -394,10 +526,25 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	files, err := s.Repo.Diff(ctx, from, to, strings.Trim(q.Get("path"), "/"))
+	path := strings.Trim(q.Get("path"), "/")
+	pr := auth.FromContext(ctx)
+	if err := pr.CheckSee(path); err != nil {
+		s.fail(w, err)
+		return
+	}
+	files, err := s.Repo.Diff(ctx, from, to, path)
 	if err != nil {
 		s.fail(w, err)
 		return
+	}
+	if !pr.ReadsAll(path) {
+		readable := files[:0]
+		for _, f := range files {
+			if pr.CanRead(f.Path) {
+				readable = append(readable, f)
+			}
+		}
+		files = readable
 	}
 	resp := DiffResponse{From: from, To: to, Files: files}
 	if resp.Files == nil {
@@ -419,7 +566,12 @@ func (s *Server) handleCat(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	e, b, err := s.Repo.ReadFile(ctx, id, strings.Trim(r.URL.Query().Get("path"), "/"))
+	path := strings.Trim(r.URL.Query().Get("path"), "/")
+	if err := auth.FromContext(ctx).CheckRead(path); err != nil {
+		s.fail(w, err)
+		return
+	}
+	e, b, err := s.Repo.ReadFile(ctx, id, path)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -437,12 +589,63 @@ func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	entries, err := s.Repo.ListDir(ctx, id, strings.Trim(r.URL.Query().Get("path"), "/"))
+	path := strings.Trim(r.URL.Query().Get("path"), "/")
+	pr := auth.FromContext(ctx)
+	if err := pr.CheckSee(path); err != nil {
+		s.fail(w, err)
+		return
+	}
+	entries, err := s.Repo.ListDir(ctx, id, path)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	if !pr.ReadsAll(path) {
+		if entries, err = s.visibleEntries(ctx, id, path, entries); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleSizes returns {name: size} for the files and symlinks directly in a
+// tree, so a lazy checkout (kudzu mount) can report exact sizes without
+// downloading contents. Like objects, a tree is addressed by ID: callers
+// with restricted read access only learn IDs of filtered trees.
+func (s *Server) handleSizes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := object.ParseID(r.URL.Query().Get("tree"))
+	if err != nil {
+		s.fail(w, fmt.Errorf("%w: %v", repo.ErrInvalid, err))
+		return
+	}
+	t, err := s.Repo.ReadTree(ctx, id)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			err = fmt.Errorf("%w: %v", repo.ErrInvalid, err)
+		}
+		s.fail(w, err)
+		return
+	}
+	out := make(map[string]int64, len(t.Entries))
+	for _, e := range t.Entries {
+		if e.IsDir() || e.Mode == object.ModeGitlink {
+			continue
+		}
+		size, ok := s.sizes.Get(e.ID)
+		if !ok {
+			b, err := s.Repo.ReadBlob(ctx, e.ID)
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			size = int64(len(b))
+			s.sizes.Add(e.ID, size)
+		}
+		out[e.Name] = size
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type AncestryResponse struct {
@@ -492,6 +695,10 @@ func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := auth.FromContext(r.Context()).CheckLand(r.PathValue("name")); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var target object.ID
 	if req.New != "" {
 		var err error
@@ -508,7 +715,7 @@ func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := writeCtx(r.Context())
 	var req struct {
 		Head string `json:"head"`
 		Onto string `json:"onto"`
@@ -532,7 +739,7 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	tree, err := s.Repo.TreeOf(ctx, newHead)
+	tree, err := s.treeFor(ctx, newHead)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -541,7 +748,7 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := writeCtx(r.Context())
 	var req struct {
 		Ours    string `json:"ours"`
 		Theirs  string `json:"theirs"`
@@ -567,11 +774,15 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if c.Tree, err = s.viewTree(ctx, c.Tree); err != nil {
+		s.fail(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, c)
 }
 
 func (s *Server) handleLand(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := writeCtx(r.Context())
 	var req struct {
 		Head string `json:"head"`
 		Ref  string `json:"ref"`
@@ -582,6 +793,10 @@ func (s *Server) handleLand(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Ref == "" {
 		req.Ref = "main"
+	}
+	if err := auth.FromContext(ctx).CheckLand(req.Ref); err != nil {
+		s.fail(w, err)
+		return
 	}
 	head, err := s.resolve(ctx, req.Head)
 	if err != nil {
@@ -609,6 +824,7 @@ func (s *Server) handleWAL(w http.ResponseWriter, r *http.Request) {
 		ID  object.ID `json:"id"`
 		*object.Changeset
 	}
+	pr := auth.FromContext(r.Context())
 	out := make([]walView, 0, len(entries))
 	for _, e := range entries {
 		c, err := object.DecodeChangeset(e.Raw)
@@ -616,6 +832,11 @@ func (s *Server) handleWAL(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
+		changes, ok := visibleChanges(pr, c)
+		if !ok {
+			continue
+		}
+		c.Changes = changes
 		out = append(out, walView{e.Seq, e.ID, c})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -639,7 +860,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, fmt.Errorf("%w: %v", repo.ErrInvalid, err))
 		return
 	}
-	tree, err := s.Repo.TreeOf(ctx, id)
+	tree, err := s.treeFor(ctx, id)
 	if err != nil {
 		s.fail(w, err)
 		return

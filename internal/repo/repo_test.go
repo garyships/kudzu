@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -13,21 +12,14 @@ import (
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
+	"github.com/garyships/kudzu/internal/store/storetest"
 )
 
+// newTestRepo uses SQLite and a directory, or the shared backends named by
+// KUDZU_TEST_POSTGRES and KUDZU_TEST_S3 (see storetest).
 func newTestRepo(t testing.TB) *Repo {
 	t.Helper()
-	dir := t.TempDir()
-	meta, err := store.OpenSQLite(filepath.Join(dir, "meta.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { meta.Close() })
-	objs, err := store.OpenFS(filepath.Join(dir, "objects"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return New(meta, &store.Cached{Mem: store.NewMem(64 << 20), Backing: objs})
+	return New(storetest.Meta(t), &store.Cached{Mem: store.NewMem(64 << 20), Backing: storetest.Objects(t)})
 }
 
 type files map[string]string
@@ -243,6 +235,82 @@ func TestNthAncestorAndResolve(t *testing.T) {
 	got, err := r.Resolve(ctx, chain[5].String()[:10])
 	if err != nil || got != chain[5] {
 		t.Fatalf("prefix resolve: %v %v", got, err)
+	}
+	for rev, want := range map[string]object.ID{
+		"main~":                      chain[298],
+		"main^":                      chain[298],
+		"main^0":                     chain[299],
+		"main~~":                     chain[297],
+		"main^^^":                    chain[296],
+		"main~10~20^~":               chain[299-32],
+		chain[5].String()[:10] + "^": chain[4],
+	} {
+		got, err := r.Resolve(ctx, rev)
+		if err != nil || got != want {
+			t.Fatalf("%s = %s, %v; want %s", rev, got.Short(), err, want.Short())
+		}
+	}
+	for _, rev := range []string{"main^2", "main~x", "main^-1", "main~1y", "~1", "main~99999999999999999999"} {
+		if _, err := r.Resolve(ctx, rev); err == nil {
+			t.Fatalf("%s should not resolve", rev)
+		}
+	}
+}
+
+// TestResolveParents checks ^N and chained suffixes on a history with merges
+// against a walk of the changesets' parent lists.
+func TestResolveParents(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	ids := randomDAG(t, r, 80, 5)
+	parentsOf := func(id object.ID) []object.ID {
+		c, err := r.Changeset(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Parents
+	}
+	rnd := rand.New(rand.NewSource(11))
+	merges := 0
+	for i := 0; i < 400; i++ {
+		start := ids[rnd.Intn(len(ids))]
+		rev, want := start.String()[:16], start
+		for k := rnd.Intn(4); k >= 0; k-- {
+			ps := parentsOf(want)
+			if len(ps) == 0 {
+				break
+			}
+			if rnd.Intn(2) == 0 {
+				n := 1 + rnd.Intn(len(ps))
+				if n == 1 && rnd.Intn(2) == 0 {
+					rev += "^"
+				} else {
+					rev += fmt.Sprintf("^%d", n)
+				}
+				merges += n - 1
+				want = ps[n-1]
+				continue
+			}
+			n := 0
+			for limit := 1 + rnd.Intn(3); n < limit && len(parentsOf(want)) > 0; n++ {
+				want = parentsOf(want)[0]
+			}
+			if n == 1 && rnd.Intn(2) == 0 {
+				rev += "~"
+			} else {
+				rev += fmt.Sprintf("~%d", n)
+			}
+		}
+		got, err := r.Resolve(ctx, rev)
+		if err != nil {
+			t.Fatalf("%s: %v", rev, err)
+		}
+		if got != want {
+			t.Fatalf("%s = %s, want %s", rev, got.Short(), want.Short())
+		}
+	}
+	if merges == 0 {
+		t.Fatal("test never followed a second parent")
 	}
 }
 

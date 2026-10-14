@@ -299,8 +299,16 @@ func cmdSparse(ctx context.Context, args []string) error {
 func cmdGC(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
 	max := fs.String("max-size", "1GB", "target size of the local object cache")
+	stores := addStoreFlags(fs, "")
+	keep := fs.String("keep", "30d", "with --store/--meta/--objects: grace period; anything newer is kept (e.g. 12h, 7d, 2w)")
+	dryRun := fs.Bool("dry-run", false, "with --store/--meta/--objects: report what would be removed without removing it")
+	addJSONFlag(fs)
 	if _, err := parse(fs, args); err != nil {
 		return err
+	}
+	// With a server store, collect its garbage instead of the working copy's.
+	if stores.set() {
+		return storeGC(ctx, stores, *keep, *dryRun)
 	}
 	n, err := parseSize(*max)
 	if err != nil {
@@ -311,8 +319,44 @@ func cmdGC(ctx context.Context, args []string) error {
 		return err
 	}
 	removed, err := wc.Objs.GC(n)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printJSON(map[string]int{"removed_objects": removed})
+	}
 	fmt.Printf("removed %s\n", plural(removed, "cached object", "cached objects"))
-	return err
+	return nil
+}
+
+func storeGC(ctx context.Context, stores storeFlags, keep string, dryRun bool) error {
+	grace, err := parseDuration(keep)
+	if err != nil {
+		return err
+	}
+	if grace < time.Hour {
+		fmt.Fprintln(os.Stderr, "warning: a grace period under 1h is only safe when no server is using the store")
+	}
+	r, closeRepo, err := stores.open(ctx, 64<<20, true)
+	if err != nil {
+		return err
+	}
+	defer closeRepo()
+	res, err := r.GC(ctx, repo.GCOptions{Keep: grace, DryRun: dryRun})
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printJSON(res)
+	}
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	fmt.Printf("%s %s of %d and %s of %d (%s)\n", verb,
+		plural(res.RemovedChangesets, "changeset", "changesets"), res.Changesets,
+		plural(res.RemovedObjects, "object", "objects"), res.Objects, formatBytes(res.RemovedBytes))
+	return nil
 }
 
 type changesetView struct {

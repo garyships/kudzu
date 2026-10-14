@@ -800,14 +800,11 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
     <header class="section-head">
       <p class="eyebrow"><span>09</span> Roadmap</p>
       <h2 id="roadmap-title">What’s next. Come build&nbsp;it.</h2>
-      <p class="lead">Kudzu is a working prototype with tests end to end. These pieces are not built yet.</p>
+      <p class="lead">Kudzu is a working prototype with tests end to end. Access control, multi-server backends, GC, git export and lazy FUSE checkouts have landed; these pieces are next.</p>
     </header>
     <ul class="roadmap">
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Virtualized checkout</h3><p>FUSE files that fetch on first read. The protocol supports it; the client doesn't yet.</p></li>
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Auth &amp; per-directory ACLs</h3><p>Today anyone who can reach the server can read and write.</p></li>
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Shared multi-server backend</h3><p>Metadata and objects already sit behind interfaces; running several servers needs Postgres/Spanner and S3/GCS implementations.</p></li>
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Object GC</h3><p>Changesets and objects orphaned by conflicts or lost races aren't collected yet.</p></li>
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Export back to git</h3><p>Import from git works, incrementally. Syncing back the other way doesn't yet.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Writable virtualized checkouts</h3><p><code>kudzu mount</code> fetches files on first read but is read-only. Next: an overlay that <code>kudzu commit</code> reads.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Spanner &amp; CockroachDB</h3><p>Metadata runs on SQLite or Postgres today; the <code>store.Meta</code> interface and its conformance tests are ready for more.</p></li>
     </ul>
     <div class="final-cta">
       <p class="final-cta-title">The agent era needs new infrastructure.</p>

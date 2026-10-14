@@ -38,17 +38,37 @@
 
 | 角色 | 接口 | 现有实现 | 生产环境可换成 |
 |---|---|---|---|
-| 权威元数据（changeset 日志、ref、派生数据） | `store.Meta` | SQLite，WAL 模式（`meta.go`） | Spanner、Postgres、CockroachDB |
+| 权威元数据（changeset 日志、ref、派生数据） | `store.Meta` | SQLite，WAL 模式（`meta.go`）；Postgres（`postgres.go`） | Spanner、CockroachDB |
 | 不可变对象 | `store.Objects` | 本地目录 `FS`、内存 LRU `Mem`、两者叠加 `Cached` | S3、GCS |
 
 SQLite 的表结构：
 
-- `changesets(seq, id, data)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅
+- `changesets(seq, id, data, created)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅；`created` 是这一条最后一次被追加的时间，供 gc 的宽限期使用
 - `refs(name, target, version)`：**移动 ref 就是对这一行做 compare-and-swap**，和创建 changeset 完全分开
 - `derived(kind, key, value)`：派生数据缓存，任何服务端都能计算后写回
-- `mapping(ns, key, value)`：git sha 到 changeset 的映射，用来做增量导入
+- `mapping(ns, key, value)`：git sha 到 changeset（`git`）以及 changeset 到 git sha（`git-export`）的映射，用来做增量导入和导出
 
-创建 changeset 只需要一次 `INSERT OR IGNORE`：不加锁、不需要跨服务器协调、不碰 ref。
+创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
+
+### 多台服务端（`--meta`、`--objects`）
+
+默认配置下只有一个权威服务端进程。`kudzu server --meta postgres://… --objects s3://bucket/prefix` 把两种存储都放到共享服务里，于是可以在负载均衡后面跑任意多台无状态服务端，正是文章的设计：
+
+- **Postgres** 用同样的四张表。移动 ref 是 `UPDATE refs … WHERE name = $1 AND target = $old` 再检查影响的行数，所以不同服务端上的 land 竞争方式和单进程完全一样：输的一方 rebase 后重试。派生数据用 `INSERT … ON CONFLICT DO NOTHING`，因为每台服务端算出的值都一样。唯一要注意的是日志：序列在插入时而不是提交时分配 `seq`，两个并发追加可能乱序提交，`/api/wal` 的读者就可能漏掉一条。所以追加时会在单行插入外面持有一个事务级 advisory lock，保证提交顺序就是日志顺序。
+- **兼容 S3 的存储桶**把对象存在 `prefix/ab/cdef…` 下。对象不可变，服务端之间不需要协调，每台服务端的内存缓存可以无限期保留任何对象。Kudzu 自己签名请求（AWS Signature V4，用 AWS 文档里的示例校验过），不依赖云厂商 SDK。`gs://` 走 GCS 兼容 S3 的 XML API（HMAC 密钥）；`?endpoint=` 可以指向 MinIO、R2 或其他兼容 S3 的服务。gc 的 touch 是把对象在服务端复制到自身，刷新 `Last-Modified` 而不传输数据。
+
+设置 `KUDZU_TEST_POSTGRES` 和 `KUDZU_TEST_S3` 后，repo 和端到端测试也会跑在这些后端上（`internal/store/storetest`）；CI 用 Postgres 和 MinIO 跑一遍。
+
+### 垃圾回收（`internal/repo/gc.go`）
+
+CAS 竞争失败后重试的 land、遇到冲突的 rebase、从没 land 的提交，都会留下没有任何 ref 能到达的 changeset 和对象。`kudzu gc --store DIR --keep 30d` 负责回收：
+
+1. **标记**：从 ref 能到达的 changeset，以及宽限期（`--keep`）内追加的 changeset，连同它们的祖先，都是活的。活 changeset 的根 tree 及其下所有对象、根 unode 及其子节点和历史版本，都是活的。已经标记过的子树直接跳过，所以标记的开销约等于不同 tree 的数量。
+2. **清除**：删除宽限期之前、不可达的 changeset，以及它们的派生数据（`tree`、`gen`、`unode`，还有它们 unode 上的 `blame`）和指向它们的 `mapping` 行。然后删除既没被标记、在宽限期内也没被写入或 touch 过的对象，顺带清掉残留的临时文件。
+
+日志的位置永远不变：被删的条目在 `seq` 里留下空洞，`/api/wal` 的读者自然跳过，`since` 游标依然有效。用墓碑只会让日志无谓地增长。
+
+gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；重新追加的 changeset 会刷新 `created`；清除前会再检查一次每个候选对象的时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
 
 ## 3. 派生数据引擎（`internal/repo/derive.go`）
 
@@ -142,6 +162,17 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
 
+### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）
+
+`kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` 把一个版本挂载成只读文件系统，事先什么都不下载，任务只为它真正读到的内容付费：
+
+- 目录第一次被列出、或者第一次有路径经过它时，才取它的 tree 对象；文件第一次被读时，才取它的 blob。都通过对象协议（通常是节点 daemon）获取，像其他对象一样校验，并放进本地缓存（内存，或 `--cache DIR`）。同一对象的并发读取共用一次请求。
+- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端读取它本来就有的 blob），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
+- 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
+- `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。可写挂载（`kudzu commit` 读取的 overlay）留待以后。
+
+测试会挂载一个版本，依次运行 `ls`、`ls -l`、`cat`、`grep -r`，每一步之后都检查只取了真正读到的对象。
+
 ## 9. git 导入（`internal/gitimport`）
 
 文章说他们的迁移管道是 git 到 Scion 的单向导入，这里也一样：
@@ -153,7 +184,25 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - `mapping` 表记录 git sha 到 changeset 的对应关系，重复执行只导入新提交，所以可以用来持续镜像一个 git 仓库
 - shallow clone 的边界提交会被当作历史的起点
 
-## 10. 哪些是文章明说的，哪些是 Kudzu 自己的选择
+**导出（`internal/gitexport`）**方向相反：agent 在 Kudzu 里工作的同时，团队现有的 git 工具（代码托管、clone 仓库的 CI、代码搜索）可以继续对着一个镜像运行。`kudzu export --store DIR --git mirror.git --ref main`：
+
+- 从 ref 往回走，遇到 git 已有的 changeset 就停：之前导出过的（`mapping` 的 `git-export` 命名空间，changeset → sha），或者导入时的 `extra.git` 提交仍然映射回它自己的。每个候选都用 `git cat-file --batch-check` 在目标仓库里确认，所以导出到没有这些提交的仓库时会重新写出它们。
+- 其余的按父先子后的顺序，交给一个 `git fast-import` 进程。changeset 本来就是相对第一父节点列出改动，正好就是 fast-import 的提交格式（`from`、`merge`、`M`、`D`）；删除放在前面，文件和目录才能互换。相同的 blob 只发送一次。作者转换成 git 身份（author 和 committer），提交说明和时区都保留。
+- 用 `git update-ref 新值 旧值` 移动分支，这是一次 compare-and-swap，默认只允许 fast-forward，`--force` 才能覆盖。
+- 两个方向的映射都写进 `mapping`，所以下次导出是增量的，之后再从镜像 `kudzu import` 也能认出这些提交，不会重复导入。
+
+## 10. 权限控制（`internal/auth`、`internal/server/views.go`）
+
+文章提到可以给单个目录设权限，这样敏感代码也能放进 monorepo。`kudzu server --auth policy.json` 开启它：
+
+- **认证**：除 `/healthz` 外，每个请求都要带 `Authorization: Bearer <token>`。策略文件里只存 token 的 SHA-256（用 `kudzu token` 生成），每个哈希对应一个主体。没带 token 的请求使用可选的 `anonymous` 主体，否则返回 401。
+- **规则**：每个主体有 `read`、`write`、`deny` 路径前缀和可以移动的 `land` ref。最长的匹配前缀决定结果，长度相同时 deny 优先于 write，write 优先于 read。
+- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff、改动列表和 WAL 会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里。
+- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，检查的都正好是新 changeset 改动的路径。移动 ref（land 或 CAS）需要对应的 `land` 规则。
+- **对象**：这是最难的部分。对象按内容寻址，任何一层都按 ID 提供，不带路径。Kudzu 的做法是：调用方只能取到它说得出 ID 的对象，所以绝不让它知道不能读的东西的 ID。凡是 API 返回 tree 的地方（resolve、show、ls、create、rebase、merge、snapshot），读权限受限的调用方拿到的都是**过滤后的 tree**：同一个目录去掉不能读的条目，写成普通的 tree 对象。客户端照常校验，所以 clone、update、commit、land 都不用改。完全可读的子树保留原 ID，过滤只发生在规则边界上的目录，结果按主体缓存。提交仍然基于真实的 changeset，所以从过滤后的 checkout 提交并 land，不会丢掉看不到的文件。
+- **缓存层**：缓存和 daemon 在 `/api/*` 和上传上转发客户端的 token，向上游取对象时用自己的 `KUDZU_TOKEN`。它们把缓存的对象提供给能连上的任何人，在这个模型下只会暴露调用方本来就说得出 ID 的东西。剩下的泄露是存在性判断：能准确猜出文件内容的人，可以确认仓库里有这个文件。
+
+## 11. 哪些是文章明说的，哪些是 Kudzu 自己的选择
 
 文章明说的：changeset 是 WAL 记录、只存相对第一父节点的改动、内容寻址的 blob；ref 是 Spanner 单行 CAS；派生数据递归定义、统一机制、可选立即或按需；三层缓存响应相同 RPC 且强制分层；按"想要什么"协商、从 root tree 递归；没有 packfile；服务端做 merge 和 rebase；sparse 和虚拟化 checkout；先合并、后测试。
 
@@ -163,13 +212,13 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 跳表的具体定义（第一父链上的二进制提升）
 - 三方合并的规则：相邻的修改也算冲突，比较保守
 - 传输层用 HTTP/1.1 加自定义帧格式，没用 gRPC，这样不需要代码生成，用 curl 也能调
-- 用 SQLite 代替 Spanner，所以目前只能有一个权威服务端进程（缓存层可以有任意多个）
+- 默认用 SQLite 和本地目录，多台服务端时用 Postgres 和兼容 S3 的存储，而不是 Spanner 和云存储
 
 ## API 一览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/resolve?rev=` | 版本号 → changeset + root tree。版本号可以是 ref、ID 前缀，后面可以加 `~N` |
+| GET | `/api/resolve?rev=` | 版本号 → changeset + root tree。版本号可以是 ref、ID 前缀，后面可以加 `~N` / `^N` 后缀（如 `main~2^2`） |
 | GET | `/api/changesets/{rev}` | changeset 详情 |
 | POST | `/api/changesets` | 创建 changeset；可选 `"land": "main"`，同一次调用里直接 land |
 | GET | `/api/log?rev=&path=&limit=` | 第一父链历史，或某个路径的历史 |

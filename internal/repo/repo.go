@@ -85,9 +85,11 @@ func (r *Repo) readObject(ctx context.Context, id object.ID, want object.Kind) (
 	return content, nil
 }
 
+// writeObject stores an object unless it exists already, in which case it is
+// touched so that garbage collection keeps it now that it is reused.
 func (r *Repo) writeObject(ctx context.Context, kind object.Kind, content []byte) (object.ID, error) {
 	id := object.Hash(kind, content)
-	if ok, _ := r.Objs.Has(ctx, id); ok {
+	if err := store.Touch(ctx, r.Objs, id); err == nil {
 		return id, nil
 	}
 	return id, r.Objs.Put(ctx, id, object.Encode(kind, content))

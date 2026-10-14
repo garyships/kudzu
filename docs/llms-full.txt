@@ -8,7 +8,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 
 - **Changeset**: the unit of work, an entry in the server's append-only log. It lists the files changed relative to its first parent (`mode: 0` means deleted). Its ID is the SHA-256 of its canonical JSON (64 hex characters). Creating one takes no lock and doesn't move any ref.
 - **Ref**: a name such as `main` that points at a changeset. It moves by compare-and-swap.
-- **Revision**: a ref name, a changeset ID or a unique hex prefix of at least 4 characters, optionally followed by `~N` for the Nth first-parent ancestor (`main~3`; `main~` is `main~1`).
+- **Revision**: a ref name, a changeset ID or a unique hex prefix of at least 4 characters, optionally followed by git-style suffixes, applied left to right: `~N` for the Nth first-parent ancestor (`main~3`; `main~` is `main~1`) and `^N` for the Nth parent (`main^2` is a merge's second parent; `^` is `^1`). They chain: `main~2^2~1`.
 - **Land**: put a changeset (and its unlanded ancestors) on a ref. The server rebases it onto the ref's current tip and compare-and-swaps the ref, retrying if it loses a race. There is no merge queue and no global lock. Overlapping edits fail with HTTP 409 and the conflicting paths. The three-way merge is conservative: adjacent edits count as a conflict too.
 - **No push**: `kudzu commit` and `kudzu write` create the changeset on the server immediately.
 - **Derived data**: root trees, per-path history (unodes), a first-parent skip list and blame are computed from changesets on the server. That is why `log PATH`, `blame` and ancestry checks are fast, and why none of them needs a checkout.
@@ -17,6 +17,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 - **Sparse (cone mode)**: a sparse directory includes everything below it, plus the files directly inside each of its ancestor directories (for example the root `README.md`). An empty spec means the full tree.
 - **Remote address**: `host:port`, `http(s)://host:port` or `unix:///path/to.sock`. Resolution: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote.
 - **Author**: `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
+- **Token**: when the server runs with `--auth`, every client (CLI, MCP server, working copy, tier) sends `$KUDZU_TOKEN` as a bearer token. Tokens are never written to disk.
 
 ## Install and run
 
@@ -50,10 +51,12 @@ A single `kudzu server` is enough for experiments: point `KUDZU_REMOTE` at it di
 |---|---|---|
 | `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `-v` | Playground: import a git repository (incrementally) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
 | `kudzu version` | | Print the version (`kudzu --version` works too). |
-| `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly) | Authoritative server: SQLite metadata plus an object directory. |
+| `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly), `--auth FILE` (access policy), `--meta postgres://…` and `--objects s3://bucket/prefix?endpoint=…` (shared backends instead of `--store`; `gs://` for GCS; credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) | Authoritative server: SQLite metadata plus an object directory, or Postgres plus an S3-compatible bucket so several servers can serve one repository. With `--auth`, requests need a bearer token and per-directory rules apply (see Access control). |
+| `kudzu token` | `--json` | Generate a random access token and the `token_sha256` to put in an `--auth` policy. |
 | `kudzu cache` | `--listen 127.0.0.1:7071`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
 | `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--upstream 127.0.0.1:7071`, `--dir $TMPDIR/kudzu-daemon`, `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. |
-| `kudzu import` | `--store kudzu-data`, `--git .`, `--ref HEAD`, `--as main` | Import git history into a server store. Incremental: commits already imported are skipped. |
+| `kudzu import` | `--store kudzu-data` (or `--meta`/`--objects`), `--git .`, `--ref HEAD`, `--as main` | Import git history into a server store. Incremental: commits already imported are skipped. |
+| `kudzu export` | `--store kudzu-data`, `--git PATH` (required), `--ref main`, `--as` (git branch, default same as `--ref`), `--force`, `--json` | Write the ref's history to a git repository (bare, or with the branch not checked out) and move the branch, fast-forward only unless `--force`. Incremental; imported commits map back to the originals, so exporting to the repository you imported from adds only what landed in Kudzu. |
 | `kudzu snapshot` | `--remote`, `-r main`, `--sparse a,b`, `-o kudzu-seed.frames` | Save every object of a revision, for `kudzu daemon --seed`. |
 | `kudzu stats` | `--remote` | Print a tier's statistics as JSON. |
 
@@ -83,7 +86,9 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | `kudzu rebase` | `-d main` | Rebase the checked-out stack onto `-d` on the server and move the checkout there. No ref moves. |
 | `kudzu update [REV]` | `-r main`, `--force` | Move the checkout, rewriting only files that differ. Refuses if tracked files are modified unless `--force`, which discards local edits to tracked files (untracked files are kept). |
 | `kudzu sparse` | `show` (default), `set DIRS…`, `add DIRS…`, `remove DIRS…` | Show or change the sparse directories (`set .` means a full checkout). Refuses while tracked files are modified. |
-| `kudzu gc` | `--max-size 1GB` | Trim the local object cache. |
+| `kudzu mount REMOTE MOUNTPOINT` | `-r main`, `--sparse dir1,dir2`, `--cache DIR`, `--max-cache 2GB` | Mount a revision as a read-only FUSE filesystem; directories and files are fetched the first time they are listed or read. Needs a binary built with `go build -tags fuse ./cmd/kudzu`. Ctrl-C unmounts. |
+| `kudzu gc` | `--max-size 1GB`, `--json` | Trim the local object cache. |
+| `kudzu gc --store DIR` | `--keep 30d`, `--dry-run`, `--json` | Server maintenance: remove changesets no ref reaches (older than `--keep`) and the objects only they used. Safe while the server runs. |
 
 ### Writing without a checkout
 
@@ -184,9 +189,27 @@ Errors are tool results with `isError: true`: invalid arguments, unknown revisio
 
 Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored).
 
-Errors: `{"error": "message"}` with status 400 (invalid request), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
+Errors: `{"error": "message"}` with status 400 (invalid request), 401 (missing or unknown token, when the server runs with `--auth`), 403 (`{"error": "permission denied: alice may not write docs/a.md", "path": "docs/a.md"}`; `path` is the denied path, or the ref for a land), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
 
 File modes are decimal in JSON: 33188 (0100644 file), 33261 (0100755 executable), 40960 (0120000 symlink), 57344 (0160000 submodule), 16384 (040000 directory, in tree entries). A change with mode 0 deletes the path.
+
+### Access control
+
+`kudzu server --auth policy.json` requires `Authorization: Bearer <token>` on every request but `/healthz`. The policy maps token hashes to principals and principals to path-prefix rules:
+
+```json
+{
+  "principals": {
+    "alice": {"token_sha256": ["<from kudzu token>"], "read": [""], "write": ["services/api"], "deny": ["secrets"], "land": ["main", "users/alice/*"]},
+    "cache": {"token_sha256": ["..."], "read": [""]}
+  },
+  "anonymous": {"read": ["docs"]}
+}
+```
+
+The longest matching prefix decides (`""` is the whole repository; at equal length deny > write > read; write implies read). Reads (`cat`, `blame`, `ls`, `diff`, `log` with a path) need read access to the path; listings, diffs, change lists and the WAL leave out what the caller may not read, and a changeset that only touched such paths is hidden. Every changeset the server creates for the caller (create, rebase, merge, land) needs write access to each path it changes. Landing on or compare-and-swapping a ref needs a matching `land` entry. Uploading needs write access somewhere. Without `anonymous`, requests with no token get 401.
+
+Objects are fetched by ID, so a caller with restricted read access only ever receives filtered trees: `/api/resolve`, `/api/changesets`, `/api/ls`, create, rebase, merge and snapshots return trees with unreadable entries removed (real tree objects, verified like any other). Clones and updates work unchanged; subtrees the caller may read in full keep their real IDs. Caches and daemons forward each client's token on `/api/*` and use their own `KUDZU_TOKEN` (normally a principal that reads everything) for upstream object fetches.
 
 ### Reading
 

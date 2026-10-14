@@ -169,22 +169,84 @@ func (r *Repo) NthAncestor(ctx context.Context, id object.ID, n int) (object.ID,
 	return id, nil
 }
 
-// Resolve turns a revision into a changeset ID. Accepted forms: a ref name,
-// a full or abbreviated (>= 4 hex chars) changeset ID, either followed by
-// ~N for the Nth first-parent ancestor.
+// Resolve turns a revision into a changeset ID. Accepted forms: a ref name
+// or a full or abbreviated (>= 4 hex chars) changeset ID, followed by any
+// number of suffixes applied left to right, as in git:
+//
+//	~N  the Nth first-parent ancestor (~ alone is ~1)
+//	^N  the Nth parent (^ alone is ^1, ^0 is the changeset itself)
+//
+// so main~2^2~1 is the first parent of the second parent of main~2.
 func (r *Repo) Resolve(ctx context.Context, rev string) (object.ID, error) {
-	base, n := rev, 0
-	if i := strings.LastIndexByte(rev, '~'); i >= 0 {
-		base = rev[:i]
-		n = 1
-		if s := rev[i+1:]; s != "" {
-			v, err := strconv.Atoi(s)
-			if err != nil || v < 0 {
-				return object.Zero, fmt.Errorf("%w: bad revision %q", ErrInvalid, rev)
+	base, suffixes := rev, ""
+	if i := strings.IndexAny(rev, "~^"); i >= 0 {
+		base, suffixes = rev[:i], rev[i:]
+	}
+	steps, err := parseRevSuffixes(suffixes)
+	if err != nil {
+		return object.Zero, fmt.Errorf("%w: bad revision %q: %v", ErrInvalid, rev, err)
+	}
+	id, err := r.resolveBase(ctx, base, rev)
+	if err != nil {
+		return object.Zero, err
+	}
+	for _, s := range steps {
+		if s.op == '~' {
+			if id, err = r.NthAncestor(ctx, id, s.n); err != nil {
+				return object.Zero, fmt.Errorf("revision %q: %w", rev, err)
+			}
+			continue
+		}
+		if s.n == 0 {
+			continue
+		}
+		c, err := r.Changeset(ctx, id)
+		if err != nil {
+			return object.Zero, err
+		}
+		if s.n > len(c.Parents) {
+			return object.Zero, fmt.Errorf("%w: revision %q: %s has %d parent(s), not %d", ErrInvalid, rev, id.Short(), len(c.Parents), s.n)
+		}
+		id = c.Parents[s.n-1]
+	}
+	return id, nil
+}
+
+type revStep struct {
+	op byte // '~' or '^'
+	n  int
+}
+
+// parseRevSuffixes splits "~2^2~" into [{~ 2} {^ 2} {~ 1}].
+func parseRevSuffixes(s string) ([]revStep, error) {
+	var steps []revStep
+	for len(s) > 0 {
+		op := s[0]
+		if op != '~' && op != '^' {
+			return nil, fmt.Errorf("unexpected %q", s)
+		}
+		s = s[1:]
+		j := 0
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		n := 1
+		if j > 0 {
+			v, err := strconv.Atoi(s[:j])
+			if err != nil {
+				return nil, err
 			}
 			n = v
 		}
+		steps = append(steps, revStep{op, n})
+		s = s[j:]
 	}
+	return steps, nil
+}
+
+// resolveBase resolves a ref name or changeset ID prefix (rev is the whole
+// revision, for error messages).
+func (r *Repo) resolveBase(ctx context.Context, base, rev string) (object.ID, error) {
 	id, err := r.Meta.GetRef(ctx, base)
 	switch {
 	case err == nil:
@@ -203,9 +265,6 @@ func (r *Repo) Resolve(ctx context.Context, rev string) (object.ID, error) {
 		}
 	default:
 		return object.Zero, fmt.Errorf("unknown revision %q: %w", rev, store.ErrNotFound)
-	}
-	if n > 0 {
-		return r.NthAncestor(ctx, id, n)
 	}
 	return id, nil
 }

@@ -32,6 +32,16 @@ type CreateRequest struct {
 	Extra   map[string]string `json:"extra,omitempty"`
 }
 
+type changeCheckKey struct{}
+
+// WithChangeCheck returns a context under which every changeset created, by
+// Create directly or by a rebase, merge or land, first passes each path it
+// changes to check. The server uses it to enforce write permissions on
+// exactly the paths a new changeset touches.
+func WithChangeCheck(ctx context.Context, check func(path string) error) context.Context {
+	return context.WithValue(ctx, changeCheckKey{}, check)
+}
+
 type Created struct {
 	ID   object.ID `json:"id"`
 	Tree object.ID `json:"tree"`
@@ -43,7 +53,9 @@ type Created struct {
 // repository, and it takes no locks: refs are moved separately.
 func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) {
 	for _, p := range req.Parents {
-		if _, err := r.Changeset(ctx, p); err != nil {
+		// Ask the log rather than the cache: garbage collection may have
+		// removed a changeset this process still remembers.
+		if _, _, err := r.Meta.GetChangeset(ctx, p); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, fmt.Errorf("%w: unknown parent %s", ErrInvalid, p.Short())
 			}
@@ -60,6 +72,13 @@ func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) 
 	changes, err := r.normalizeChanges(ctx, base, req.Changes)
 	if err != nil {
 		return nil, err
+	}
+	if check, ok := ctx.Value(changeCheckKey{}).(func(string) error); ok {
+		for _, ch := range changes {
+			if err := check(ch.Path); err != nil {
+				return nil, err
+			}
+		}
 	}
 	tree, err := r.applyToTree(ctx, base, changes)
 	if err != nil {
@@ -122,6 +141,11 @@ func (r *Repo) normalizeChanges(ctx context.Context, base object.ID, in []object
 			}
 			if len(stored) == 0 || object.Kind(stored[0]) != object.KindBlob {
 				return nil, fmt.Errorf("%w: %s: %s is not a blob", ErrInvalid, ch.Path, ch.Blob.Short())
+			}
+			if err := store.Touch(ctx, r.Objs, ch.Blob); errors.Is(err, store.ErrNotFound) {
+				return nil, fmt.Errorf("%w: %s: blob %s was not uploaded", ErrInvalid, ch.Path, ch.Blob.Short())
+			} else if err != nil {
+				return nil, err
 			}
 		}
 		old, ok, err := r.LookupPath(ctx, base, ch.Path)

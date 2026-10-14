@@ -98,6 +98,7 @@ Cursor、Claude Desktop 等客户端的配置见 [docs/AI.md](docs/AI.md)。
 
 ```bash
 kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行
+kudzu export --store ./data --git /path/to/mirror.git --ref main   # 把 Kudzu 里 land 的内容同步回 git 镜像，也是增量的
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
@@ -124,12 +125,9 @@ kudzu write -r main -m "bump" --land main VERSION=@./VERSION   # 完全不用工
 
 ## 现状
 
-Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入结果和 `git ls-tree`、`git blame --first-parent` 逐一核对过。还没做：
-- 虚拟化 checkout（FUSE）
-- 认证和按目录的权限控制
-- 多台服务端共享后端（Postgres 或 Spanner，S3）
-- 对象回收
-- 导出回 git
+Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入结果和 `git ls-tree`、`git blame --first-parent` 逐一核对过，导出也能完整回到 git。已经做了：按目录的权限控制（`kudzu server --auth`）、基于 Postgres 和兼容 S3 存储的多台无状态服务端（`--meta`、`--objects`）、垃圾回收（`kudzu gc --store`）、按需获取的 FUSE checkout（`kudzu mount`，用 `-tags fuse` 编译）。还没做：
+- 可写的虚拟化 checkout（`kudzu mount` 目前只读）
+- Spanner 或 CockroachDB 元数据存储（Postgres 已经可以用）
 
 ## 许可证
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/repo"
@@ -235,5 +236,58 @@ func TestFitWidth(t *testing.T) {
 	}
 	if plural(1, "file", "files") != "1 file" || plural(2, "file", "files") != "2 files" {
 		t.Error("plural")
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"30d": 30 * 24 * time.Hour, "2w": 14 * 24 * time.Hour, "1d12h": 36 * time.Hour,
+		"90m": 90 * time.Minute, "0": 0, "1w2d": 9 * 24 * time.Hour,
+	} {
+		if got, err := parseDuration(in); err != nil || got != want {
+			t.Errorf("parseDuration(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "x", "-1h", "-2d", "d", "3y"} {
+		if _, err := parseDuration(in); err == nil {
+			t.Errorf("parseDuration(%q) should fail", in)
+		}
+	}
+	if formatBytes(512) != "512 B" || formatBytes(1536) != "1.5 KB" || formatBytes(3<<20) != "3.0 MB" {
+		t.Error("formatBytes")
+	}
+}
+
+func TestStoreGC(t *testing.T) {
+	dir := t.TempDir()
+	r, closeRepo, err := openRepo(dir, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	blob, _ := r.WriteBlob(ctx, []byte("kept\n"))
+	c, err := r.Create(ctx, repo.CreateRequest{Message: "m", Changes: []object.Change{{Path: "f", Mode: object.ModeFile, Blob: blob}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Meta.CASRef(ctx, "main", object.Zero, c.ID)
+	stray, _ := r.WriteBlob(ctx, []byte("stray\n"))
+	closeRepo()
+	t.Chdir(t.TempDir())
+
+	var res repo.GCResult
+	decode(t, run(t, cmdGC, "--store", dir, "--keep", "0s", "--dry-run", "--json"), &res)
+	if !res.DryRun || res.RemovedObjects != 1 || res.RemovedChangesets != 0 {
+		t.Fatalf("gc --dry-run = %+v", res)
+	}
+	if out := run(t, cmdGC, "--store", dir, "--keep", "0s"); !strings.HasPrefix(out, "removed 0 changesets of 1 and 1 object of ") {
+		t.Fatalf("gc = %q", out)
+	}
+	h := stray.String()
+	if _, err := os.Stat(filepath.Join(dir, "objects", h[:2], h[2:])); !os.IsNotExist(err) {
+		t.Fatal("stray blob survived gc")
+	}
+	if err := cmdGC(ctx, []string{"--store", t.TempDir()}); err == nil {
+		t.Fatal("gc of a directory that is not a store should fail")
 	}
 }
