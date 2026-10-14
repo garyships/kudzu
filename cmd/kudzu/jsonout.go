@@ -43,6 +43,9 @@ func printJSONError(err error) {
 		if len(he.Conflicts) > 0 {
 			out["conflicts"] = he.Conflicts
 		}
+		if he.Status == 403 {
+			out["path"] = he.Path
+		}
 	}
 	writeJSON(os.Stderr, out)
 }

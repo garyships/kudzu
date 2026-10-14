@@ -32,6 +32,16 @@ type CreateRequest struct {
 	Extra   map[string]string `json:"extra,omitempty"`
 }
 
+type changeCheckKey struct{}
+
+// WithChangeCheck returns a context under which every changeset created, by
+// Create directly or by a rebase, merge or land, first passes each path it
+// changes to check. The server uses it to enforce write permissions on
+// exactly the paths a new changeset touches.
+func WithChangeCheck(ctx context.Context, check func(path string) error) context.Context {
+	return context.WithValue(ctx, changeCheckKey{}, check)
+}
+
 type Created struct {
 	ID   object.ID `json:"id"`
 	Tree object.ID `json:"tree"`
@@ -62,6 +72,13 @@ func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) 
 	changes, err := r.normalizeChanges(ctx, base, req.Changes)
 	if err != nil {
 		return nil, err
+	}
+	if check, ok := ctx.Value(changeCheckKey{}).(func(string) error); ok {
+		for _, ch := range changes {
+			if err := check(ch.Path); err != nil {
+				return nil, err
+			}
+		}
 	}
 	tree, err := r.applyToTree(ctx, base, changes)
 	if err != nil {

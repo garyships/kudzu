@@ -16,7 +16,8 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/object/` | Content-addressed objects (blob, tree, unode), changesets, IDs and the stored form used on disk and on the wire. |
 | `internal/store/` | Storage interfaces: `Meta` (SQLite: changeset log, refs with CAS, derived data, git mapping) and `Objects` (`FS`, in-memory `Mem`, layered `Cached`). |
 | `internal/repo/` | Server-side core: derived-data engine (`derive.go`), revisions, skip list and merge base (`ancestry.go`), log/blame/diff/cat/ls (`query.go`), tree edits (`edits.go`), create, three-way merge, rebase, merge and lock-free land (`write.go`), mark-and-sweep garbage collection (`gc.go`). |
-| `internal/server/` | The authoritative tier: the HTTP API (`/api/*`) and the object protocol. The API table is at the end of [docs/DESIGN.md](docs/DESIGN.md). |
+| `internal/server/` | The authoritative tier: the HTTP API (`/api/*`) and the object protocol. The API table is at the end of [docs/DESIGN.md](docs/DESIGN.md). `views.go` filters trees for callers with restricted read access. |
+| `internal/auth/` | Bearer tokens, principals and per-directory read/write/land rules (`kudzu server --auth`). |
 | `internal/proto/` | Object protocol framing and `Remote`, the HTTP client every other package uses (`host:port`, `http(s)://…` or `unix:///path`). |
 | `internal/tier/` | Regional cache and node daemon (same code): coalesced misses, bounded upstream concurrency, snapshot seeding, `/stats`. |
 | `internal/client/` | The working copy: clone, status, commit, update, sparse, land, rebase, local diff. |
@@ -63,7 +64,8 @@ KUDZU_REMOTE=127.0.0.1:7070 ./kudzu log -n 5 --oneline
 - Commands print human-readable output by default. Query and commit commands also take `--json`; when you add output, add it to the JSON form too and keep stdout free of anything else.
 - `kudzu mcp` speaks the protocol on stdout: diagnostics go to stderr, and the working-copy tools set `wc.Out = io.Discard`.
 - Errors that reach users name the thing that failed. Conflicts carry the conflicting paths (`repo.ConflictError` → HTTP 409 → `proto.HTTPError.Conflicts`).
-- Remote resolution everywhere: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote. Author: `--author` > `$KUDZU_AUTHOR` > `user <user@host>`.
+- Remote resolution everywhere: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote. Author: `--author` > `$KUDZU_AUTHOR` > `user <user@host>`. Token: `$KUDZU_TOKEN`, read by `proto.Dial` and never persisted.
+- New `/api` handlers that read a path check `auth.FromContext(ctx)` (a nil principal means auth is off), and any tree ID they return goes through `Server.viewTree`.
 
 ## Design
 

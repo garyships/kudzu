@@ -43,6 +43,7 @@ func init() {
 		{"import", "import git history into a server store", cmdImport},
 		{"export", "export a ref's history from a server store to a git repository", cmdExport},
 		{"snapshot", "save a revision's objects for seeding a daemon", cmdSnapshot},
+		{"token", "generate an access token for a server's --auth policy", cmdToken},
 
 		{"clone", "create a (sparse) working copy", cmdClone},
 		{"status", "show local changes", cmdStatus},

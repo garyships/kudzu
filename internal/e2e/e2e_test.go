@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/garyships/kudzu/internal/auth"
 	"github.com/garyships/kudzu/internal/client"
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/proto"
@@ -37,7 +38,10 @@ type stack struct {
 	sock   string
 }
 
-func newStack(t *testing.T) *stack {
+func newStack(t *testing.T) *stack { return newStackAuth(t, nil) }
+
+// newStackAuth starts a stack whose server enforces policy (nil: no auth).
+func newStackAuth(t *testing.T, policy *auth.Policy) *stack {
 	t.Helper()
 	dir := t.TempDir()
 	meta, err := store.OpenSQLite(filepath.Join(dir, "meta.db"))
@@ -51,7 +55,9 @@ func newStack(t *testing.T) *stack {
 	}
 	r := repo.New(meta, &store.Cached{Mem: store.NewMem(64 << 20), Backing: objs})
 	s := &stack{repo: r}
-	s.server = httptest.NewServer(server.New(r, log.New(io.Discard, "", 0)).Handler())
+	srv := server.New(r, log.New(io.Discard, "", 0))
+	srv.Auth = policy
+	s.server = httptest.NewServer(srv.Handler())
 	t.Cleanup(s.server.Close)
 
 	up, _ := proto.Dial(s.server.URL)

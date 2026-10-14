@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,8 +22,11 @@ import (
 // like unix:///run/kudzu.sock (how jobs reach their node's daemon).
 type Remote struct {
 	Addr string
-	base string
-	hc   *http.Client
+	// Token is sent as a bearer token. Dial takes it from $KUDZU_TOKEN; it
+	// is never written to disk.
+	Token string
+	base  string
+	hc    *http.Client
 }
 
 func Dial(addr string) (*Remote, error) {
@@ -35,7 +39,7 @@ func Dial(addr string) (*Remote, error) {
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true, // objects are already compressed
 	}
-	r := &Remote{Addr: addr, hc: &http.Client{Transport: tr}}
+	r := &Remote{Addr: addr, Token: os.Getenv("KUDZU_TOKEN"), hc: &http.Client{Transport: tr}}
 	if sock, ok := strings.CutPrefix(addr, "unix://"); ok {
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
@@ -59,11 +63,13 @@ func (r *Remote) BaseURL() *url.URL {
 	return u
 }
 
-// HTTPError is a non-2xx response. Conflicts lists paths for 409s.
+// HTTPError is a non-2xx response. Conflicts lists paths for 409s; Path is
+// the path or ref a 403 refers to.
 type HTTPError struct {
 	Status    int
 	Message   string
 	Conflicts []string
+	Path      string
 }
 
 func (e *HTTPError) Error() string {
@@ -90,6 +96,9 @@ func (r *Remote) do(ctx context.Context, method, path string, q url.Values, body
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	if r.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+r.Token)
+	}
 	resp, err := r.hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -101,9 +110,13 @@ func (r *Remote) do(ctx context.Context, method, path string, q url.Values, body
 		var j struct {
 			Error     string   `json:"error"`
 			Conflicts []string `json:"conflicts"`
+			Path      *string  `json:"path"`
 		}
 		if json.Unmarshal(b, &j) == nil && j.Error != "" {
 			he.Message, he.Conflicts = j.Error, j.Conflicts
+			if j.Path != nil {
+				he.Path = *j.Path
+			}
 		}
 		return nil, he
 	}

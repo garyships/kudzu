@@ -171,7 +171,18 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 用 `git update-ref 新值 旧值` 移动分支，这是一次 compare-and-swap，默认只允许 fast-forward，`--force` 才能覆盖。
 - 两个方向的映射都写进 `mapping`，所以下次导出是增量的，之后再从镜像 `kudzu import` 也能认出这些提交，不会重复导入。
 
-## 10. 哪些是文章明说的，哪些是 Kudzu 自己的选择
+## 10. 权限控制（`internal/auth`、`internal/server/views.go`）
+
+文章提到可以给单个目录设权限，这样敏感代码也能放进 monorepo。`kudzu server --auth policy.json` 开启它：
+
+- **认证**：除 `/healthz` 外，每个请求都要带 `Authorization: Bearer <token>`。策略文件里只存 token 的 SHA-256（用 `kudzu token` 生成），每个哈希对应一个主体。没带 token 的请求使用可选的 `anonymous` 主体，否则返回 401。
+- **规则**：每个主体有 `read`、`write`、`deny` 路径前缀和可以移动的 `land` ref。最长的匹配前缀决定结果，长度相同时 deny 优先于 write，write 优先于 read。
+- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff、改动列表和 WAL 会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里。
+- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，检查的都正好是新 changeset 改动的路径。移动 ref（land 或 CAS）需要对应的 `land` 规则。
+- **对象**：这是最难的部分。对象按内容寻址，任何一层都按 ID 提供，不带路径。Kudzu 的做法是：调用方只能取到它说得出 ID 的对象，所以绝不让它知道不能读的东西的 ID。凡是 API 返回 tree 的地方（resolve、show、ls、create、rebase、merge、snapshot），读权限受限的调用方拿到的都是**过滤后的 tree**：同一个目录去掉不能读的条目，写成普通的 tree 对象。客户端照常校验，所以 clone、update、commit、land 都不用改。完全可读的子树保留原 ID，过滤只发生在规则边界上的目录，结果按主体缓存。提交仍然基于真实的 changeset，所以从过滤后的 checkout 提交并 land，不会丢掉看不到的文件。
+- **缓存层**：缓存和 daemon 在 `/api/*` 和上传上转发客户端的 token，向上游取对象时用自己的 `KUDZU_TOKEN`。它们把缓存的对象提供给能连上的任何人，在这个模型下只会暴露调用方本来就说得出 ID 的东西。剩下的泄露是存在性判断：能准确猜出文件内容的人，可以确认仓库里有这个文件。
+
+## 11. 哪些是文章明说的，哪些是 Kudzu 自己的选择
 
 文章明说的：changeset 是 WAL 记录、只存相对第一父节点的改动、内容寻址的 blob；ref 是 Spanner 单行 CAS；派生数据递归定义、统一机制、可选立即或按需；三层缓存响应相同 RPC 且强制分层；按"想要什么"协商、从 root tree 递归；没有 packfile；服务端做 merge 和 rebase；sparse 和虚拟化 checkout；先合并、后测试。
 

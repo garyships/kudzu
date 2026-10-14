@@ -175,7 +175,18 @@ Tests check that every imported commit's tree (modes, symlinks, file/directory s
 
 Tests round-trip import → land (including a server-side merge and file/directory swaps) → export and compare every commit's tree, author and message with Kudzu's.
 
-## 10. From the post vs Kudzu's own choices
+## 10. Access control (`internal/auth`, `internal/server/views.go`)
+
+The post describes permissions on individual directories, so sensitive code can live in the monorepo. `kudzu server --auth policy.json` turns them on:
+
+- **Authentication.** Every request but `/healthz` carries `Authorization: Bearer <token>`. The policy stores only SHA-256 hashes of tokens (`kudzu token` makes one), mapping each to a principal. Requests without a token use the optional `anonymous` principal, or get 401.
+- **Rules.** Each principal has `read`, `write` and `deny` path prefixes and `land` refs. The longest matching prefix decides; at equal length deny beats write beats read. So `"read": [""], "deny": ["secrets"], "write": ["services/api"]` reads everything but `secrets/` and writes only `services/api/`.
+- **Reads.** `cat`, `blame`, `ls`, `diff` and `log` with a path check read access and answer 403 naming the path. Listings, diffs, change lists and the WAL drop entries the caller may not read; a changeset that only touched such paths is hidden from `log`.
+- **Writes.** Write checks happen inside `repo.Create` (through `repo.WithChangeCheck`), so they cover exactly the paths each new changeset changes, whether the server creates it for a commit, a rebase, a merge or a land's rebase. Moving a ref (land or compare-and-swap) needs a `land` entry for it.
+- **Objects.** This is the hard part: objects are content-addressed and fetched by ID from any tier, with no path attached. Kudzu's answer is that a caller can only fetch what it can name, so it never learns the ID of anything it may not read. Wherever the API returns a tree (resolve, show, ls, create, rebase, merge, snapshot), a caller with restricted read access gets a *filtered tree*: the same directory with unreadable entries removed, written as an ordinary tree object. Clients verify it like any other, so clone, update, commit and land work unchanged on a filtered view. Subtrees the caller may read in full keep their real IDs, so filtering costs only the directories along rule boundaries, and the results are cached per principal. Commits are still made against the real changeset, so landing from a filtered checkout keeps the files the caller cannot see.
+- **Tiers.** Caches and daemons forward each client's token on `/api/*` and uploads, and fetch objects upstream with their own `KUDZU_TOKEN`. They serve cached objects to whoever can reach them, which under this model only exposes what callers can already name. The remaining leak is an existence oracle: someone who can guess a file's exact content can confirm the repository holds it.
+
+## 11. From the post vs Kudzu's own choices
 
 **Stated in the post:**
 - Changesets as log entries with changes relative to the first parent; content-addressed blobs.

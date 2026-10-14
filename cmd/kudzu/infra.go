@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/garyships/kudzu/internal/auth"
 	"github.com/garyships/kudzu/internal/gitexport"
 	"github.com/garyships/kudzu/internal/gitimport"
 	"github.com/garyships/kudzu/internal/proto"
@@ -82,8 +83,16 @@ func cmdServer(ctx context.Context, args []string) error {
 	addr := fs.String("listen", "127.0.0.1:7070", "listen address (host:port or unix:///path)")
 	mem := fs.String("mem", "512MB", "in-memory object cache size")
 	lazy := fs.String("lazy", "", "comma-separated derived types to compute lazily (gen, unode)")
+	authFile := fs.String("auth", "", "access policy file: require bearer tokens and enforce per-directory rules (see 'kudzu token')")
 	if _, err := parse(fs, args); err != nil {
 		return err
+	}
+	var policy *auth.Policy
+	if *authFile != "" {
+		var err error
+		if policy, err = auth.Load(*authFile); err != nil {
+			return err
+		}
 	}
 	memBytes, err := parseSize(*mem)
 	if err != nil {
@@ -108,7 +117,30 @@ func cmdServer(ctx context.Context, args []string) error {
 		r.Eager = eager
 	}
 	logger := log.New(os.Stderr, "kudzu-server ", log.LstdFlags)
-	return serve(ctx, *addr, server.New(r, logger).Handler(), logger)
+	srv := server.New(r, logger)
+	srv.Auth = policy
+	if policy != nil {
+		logger.Printf("enforcing access policy %s", *authFile)
+	}
+	return serve(ctx, *addr, srv.Handler(), logger)
+}
+
+// cmdToken prints a new random token and the line to add to a policy file.
+func cmdToken(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("token", flag.ContinueOnError)
+	addJSONFlag(fs)
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	token, hash, err := auth.NewToken()
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printJSON(map[string]string{"token": token, "token_sha256": hash})
+	}
+	fmt.Printf("token:         %s\ntoken_sha256:  %s\n\nGive the token to the client (export KUDZU_TOKEN=...) and put the hash in\nthe principal's \"token_sha256\" list in the server's --auth policy file.\n", token, hash)
+	return nil
 }
 
 func runTier(ctx context.Context, name, addr, upstream string, local store.Objects, concurrency int, seed string) error {
