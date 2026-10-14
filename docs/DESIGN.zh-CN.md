@@ -197,8 +197,8 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 - **认证**：除 `/healthz` 外，每个请求都要带 `Authorization: Bearer <token>`。策略文件里只存 token 的 SHA-256（用 `kudzu token` 生成），每个哈希对应一个主体。没带 token 的请求使用可选的 `anonymous` 主体，否则返回 401。
 - **规则**：每个主体有 `read`、`write`、`deny` 路径前缀和可以移动的 `land` ref。最长的匹配前缀决定结果，长度相同时 deny 优先于 write，write 优先于 read。
-- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff、改动列表和 WAL 会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里。
-- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，检查的都正好是新 changeset 改动的路径。移动 ref（land 或 CAS）需要对应的 `land` 规则。
+- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff 和改动列表会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里，在 WAL 里只以 `{seq, id, hidden: true}` 出现，读者的游标仍能前进。
+- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，新 changeset 列出的每个路径都会被检查；检查发生在去掉无效改动之前，所以不能借写操作验证对不可读文件内容的猜测。移动 ref（land 或 CAS）需要对应的 `land` 规则，并且 `repo.MoveRef` 会检查 ref 新旧 tree 之间内容不同的每个路径：fast-forward 到别人的 changeset、第一父节点无关的 merge、回滚，改变 ref 内容的程度和新 changeset 一样。被拒绝的路径如果调用方连读都不能读，错误信息里不会出现；merge 和 rebase 的冲突也只给出数量，不列出这些路径。
 - **对象**：这是最难的部分。对象按内容寻址，任何一层都按 ID 提供，不带路径。Kudzu 的做法是：调用方只能取到它说得出 ID 的对象，所以绝不让它知道不能读的东西的 ID。凡是 API 返回 tree 的地方（resolve、show、ls、create、rebase、merge、snapshot），读权限受限的调用方拿到的都是**过滤后的 tree**：同一个目录去掉不能读的条目，写成普通的 tree 对象。客户端照常校验，所以 clone、update、commit、land 都不用改。完全可读的子树保留原 ID，过滤只发生在规则边界上的目录，结果按主体缓存。提交仍然基于真实的 changeset，所以从过滤后的 checkout 提交并 land，不会丢掉看不到的文件。
 - **缓存层**：缓存和 daemon 在 `/api/*` 和上传上转发客户端的 token，向上游取对象时用自己的 `KUDZU_TOKEN`。它们把缓存的对象提供给能连上的任何人，在这个模型下只会暴露调用方本来就说得出 ID 的东西。剩下的泄露是存在性判断：能准确猜出文件内容的人，可以确认仓库里有这个文件。
 
