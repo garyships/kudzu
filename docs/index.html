@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kudzu — version control for agent-scale monorepos</title>
-<meta name="description" content="Kudzu is an open-source version control system for agent-scale monorepos. No full clones: clients fetch exactly the objects they want through tiered caches. History, blame, diffs and merges run on the server, and changes land lock-free.">
+<title>Kudzu — Anthropic's Scion, rebuilt in the open</title>
+<meta name="description" content="Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion and kept it internal. Kudzu is the open-source rebuild: no full clones, history and merges on the server, lock-free landing.">
 <meta name="theme-color" content="#07100b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f7faf6" media="(prefers-color-scheme: light)">
 <meta name="color-scheme" content="dark light">
@@ -14,15 +14,15 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Kudzu">
 <meta property="og:url" content="https://garyships.github.io/kudzu/">
-<meta property="og:title" content="Kudzu — version control that keeps up with your agents">
-<meta property="og:description" content="Open-source VCS for agent-scale monorepos: no full clones, want-based fetch through tiered caches, history and merges on the server, lock-free landing.">
+<meta property="og:title" content="Kudzu — Anthropic's Scion, rebuilt in the open">
+<meta property="og:description" content="Anthropic outgrew git at 30,000+ merges a day and built Scion — then kept it internal. Kudzu rebuilds it from their write-up, open source.">
 <meta property="og:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Kudzu: version control for agent-scale monorepos. Server, regional cache, node daemon and agents connected by a growing vine.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Kudzu — version control that keeps up with your agents">
-<meta name="twitter:description" content="Open-source VCS for agent-scale monorepos: no full clones, want-based fetch through tiered caches, history and merges on the server, lock-free landing.">
+<meta name="twitter:title" content="Kudzu — Anthropic's Scion, rebuilt in the open">
+<meta name="twitter:description" content="Anthropic outgrew git at 30,000+ merges a day and built Scion — then kept it internal. Kudzu rebuilds it from their write-up, open source.">
 <meta name="twitter:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
 <meta name="twitter:image:alt" content="Kudzu: version control for agent-scale monorepos.">
 
@@ -100,17 +100,18 @@
   </svg>
 
   <div class="container hero-inner">
-    <a class="pill" href="https://github.com/garyships/kudzu">
+    <a class="pill" href="https://www.anthropic.com/engineering/redesigning-source-control">
       <span class="pill-dot" aria-hidden="true"></span>
-      Open source · written in Go · MIT licensed
+      Read Anthropic's post on Scion
       <svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg>
     </a>
     <h1 id="hero-title">
-      Your agents write code like <em>kudzu</em>&nbsp;grows.
-      <span class="h1-sub">Your version control should keep&nbsp;up.</span>
+      Anthropic's Scion, rebuilt in the&nbsp;<em>open</em>.
+      <span class="h1-sub">Your agents write code like kudzu&nbsp;grows.</span>
     </h1>
     <p class="hero-lead">
-      Kudzu is an open-source version control system for agent-scale monorepos.
+      Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion, and kept it internal.
+      <strong>Kudzu rebuilds it from their write-up, in the open.</strong>
       Clients never clone the whole repo: they ask for exactly the objects they want through tiered caches.
       History, blame, diffs and merges run on the server, and changes land without a lock.
     </p>
@@ -124,9 +125,9 @@
       </a>
     </div>
     <p class="hero-note">
-      An independent take on the design Anthropic described for its internal system, Scion.
+      Rebuilt from Anthropic's engineering post the day after it was published.
       <a href="https://www.anthropic.com/engineering/redesigning-source-control">Read the article</a>.
-      Not affiliated with Anthropic.
+      Unofficial; not affiliated with Anthropic.
     </p>
   </div>
 
@@ -792,9 +793,9 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
       <a href="https://www.anthropic.com/engineering/redesigning-source-control">Anthropic's article</a>
     </nav>
     <p class="disclaimer">
-      Kudzu is an independent open-source project. It is not affiliated with or endorsed by Anthropic, and it is not Scion or Scion's code.
-      It implements design ideas Anthropic described publicly in
+      Kudzu is an unofficial, open-source rebuild of the system Anthropic described in
       <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a>.
+      It is not affiliated with or endorsed by Anthropic and contains no Anthropic code.
       Figures attributed to that article are Anthropic's, not Kudzu's.
     </p>
   </div>

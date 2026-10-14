@@ -2,10 +2,11 @@
 
 # Kudzu
 
-**你的 agent 写代码像葛藤一样疯长，版本控制得跟得上。**
+### Anthropic 每天合并 3 万多次代码，git 扛不住，于是他们自研了 Scion，但没有开源。<br/>Kudzu 是照着他们的文章复刻的开源版。
 
-为"大部分客户端是 AI agent 和 CI 任务"的 monorepo 设计的版本控制系统。<br/>
-独立的开源实现，设计思路来自 Anthropic 公开介绍的内部系统 [Scion](https://www.anthropic.com/engineering/redesigning-source-control)。
+为"提交代码的主要是 AI agent"的 monorepo 设计的版本控制系统。<br/>
+在 Anthropic 发布[这篇工程文章](https://www.anthropic.com/engineering/redesigning-source-control)的第二天复刻完成。<br/>
+*你的 agent 写代码像葛藤一样疯长，版本控制得跟得上。*
 
 [官网](https://garyships.github.io/kudzu/) · [演示视频](https://garyships.github.io/kudzu/#demo) · [设计文档](docs/DESIGN.zh-CN.md) · [给 AI agent 用](docs/AI.md) · [English](README.md)
 
@@ -84,4 +85,4 @@ Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入�
 
 ## 许可证
 
-MIT。Kudzu 是独立项目，和 Anthropic 没有关系，也没有得到 Anthropic 的背书。设计思路来自 Anthropic 公开的文章 [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control)。
+MIT。Kudzu 是对 Anthropic 公开文章 [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control) 所描述系统的非官方复刻，和 Anthropic 没有关系，也没有得到 Anthropic 的背书，不包含 Anthropic 的任何代码。

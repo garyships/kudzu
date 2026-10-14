@@ -2,10 +2,11 @@
 
 # Kudzu
 
-**Your agents write code like kudzu grows. Your version control should keep up.**
+### Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion and kept it internal.<br/>Kudzu is the open-source rebuild.
 
-Version control for monorepos where most clients are AI agents and CI jobs.<br/>
-An independent, open-source take on the design behind Anthropic's [Scion](https://www.anthropic.com/engineering/redesigning-source-control).
+Version control for monorepos where your committers are AI agents.<br/>
+Rebuilt from Anthropic's [engineering post](https://www.anthropic.com/engineering/redesigning-source-control) the day after it was published.<br/>
+*Your agents write code like kudzu grows. Your version control should keep up.*
 
 [![ci](https://github.com/garyships/kudzu/actions/workflows/ci.yml/badge.svg)](https://github.com/garyships/kudzu/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
@@ -162,4 +163,4 @@ Contributions are welcome. See [AGENTS.md](AGENTS.md) for a map of the code.
 
 ## License
 
-MIT. Kudzu is an independent project, not affiliated with or endorsed by Anthropic. The design follows ideas from Anthropic's public post [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control).
+MIT. Kudzu is an unofficial rebuild of the system described in Anthropic's public post [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control). It is not affiliated with or endorsed by Anthropic and contains no Anthropic code.
