@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -13,21 +12,14 @@ import (
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
+	"github.com/garyships/kudzu/internal/store/storetest"
 )
 
+// newTestRepo uses SQLite and a directory, or the shared backends named by
+// KUDZU_TEST_POSTGRES and KUDZU_TEST_S3 (see storetest).
 func newTestRepo(t testing.TB) *Repo {
 	t.Helper()
-	dir := t.TempDir()
-	meta, err := store.OpenSQLite(filepath.Join(dir, "meta.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { meta.Close() })
-	objs, err := store.OpenFS(filepath.Join(dir, "objects"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return New(meta, &store.Cached{Mem: store.NewMem(64 << 20), Backing: objs})
+	return New(storetest.Meta(t), &store.Cached{Mem: store.NewMem(64 << 20), Backing: storetest.Objects(t)})
 }
 
 type files map[string]string

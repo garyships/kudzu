@@ -10,6 +10,7 @@ import (
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
+	"github.com/garyships/kudzu/internal/store/storetest"
 )
 
 // gcRepo is a test repository whose store directory is known, so tests can
@@ -17,17 +18,15 @@ import (
 type gcRepo struct {
 	*Repo
 	dir  string
-	meta *store.SQLite
+	meta store.Meta
 }
 
+// newGCRepo keeps objects in a directory, whose mtimes the tests age; the
+// metadata store follows KUDZU_TEST_POSTGRES like every repo test.
 func newGCRepo(t *testing.T) *gcRepo {
 	t.Helper()
 	dir := t.TempDir()
-	meta, err := store.OpenSQLite(filepath.Join(dir, "meta.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { meta.Close() })
+	meta := storetest.Meta(t)
 	objs, err := store.OpenFS(filepath.Join(dir, "objects"), 0)
 	if err != nil {
 		t.Fatal(err)

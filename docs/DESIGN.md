@@ -38,8 +38,8 @@ The post describes two storage roles. Both are interfaces in Kudzu:
 
 | Role | Interface | Implementation today | Production candidates |
 |---|---|---|---|
-| Authoritative metadata: changeset log, refs, derived data | `store.Meta` | SQLite in WAL mode (`meta.go`) | Spanner, Postgres, CockroachDB |
-| Immutable objects | `store.Objects` | directory (`FS`), memory LRU (`Mem`), layered (`Cached`) | S3, GCS |
+| Authoritative metadata: changeset log, refs, derived data | `store.Meta` | SQLite in WAL mode (`meta.go`); Postgres (`postgres.go`) | Spanner, CockroachDB |
+| Immutable objects | `store.Objects` | directory (`FS`), memory LRU (`Mem`), layered (`Cached`); S3-compatible buckets (`s3.go`: S3, GCS, R2, MinIO) | |
 
 SQLite tables:
 
@@ -49,6 +49,15 @@ SQLite tables:
 - `mapping(ns, key, value)`: git sha → changeset (`git`) and changeset → git sha (`git-export`), for incremental imports and exports.
 
 Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
+
+### Several servers (`--meta`, `--objects`)
+
+With the local defaults there is one authoritative server process. `kudzu server --meta postgres://… --objects s3://bucket/prefix` keeps both roles in shared services instead, so any number of stateless servers can run behind a load balancer, as the post intends:
+
+- **Postgres** holds the same four tables. A ref moves by `UPDATE refs … WHERE name = $1 AND target = $old` and checks the rows affected, so lands on different servers race exactly as they do in one process: the loser rebases and retries. Derived data is `INSERT … ON CONFLICT DO NOTHING`, since every server computes the same value. The one subtlety is the log: a sequence hands out `seq` at insert time, not commit time, so two concurrent appends could commit out of order and a `/api/wal` reader could skip one. Appends therefore take a transaction-scoped advisory lock around a single-row insert, which keeps commit order equal to log order.
+- **S3-compatible buckets** hold objects under `prefix/ab/cdef…`. Objects are immutable, so servers never coordinate over them, and each server's memory cache can keep any object indefinitely. Kudzu signs requests itself (AWS Signature Version 4, checked against AWS's published examples), so there is no cloud SDK dependency. `gs://` uses GCS's S3-compatible XML API with HMAC keys; `?endpoint=` points at MinIO, R2 or anything else S3-compatible. gc's touch is a server-side copy of an object onto itself, which refreshes `Last-Modified` without moving data.
+
+The repo and end-to-end tests run against these backends too when `KUDZU_TEST_POSTGRES` and `KUDZU_TEST_S3` are set (`internal/store/storetest`); CI does this with Postgres and MinIO.
 
 ### Garbage collection (`internal/repo/gc.go`)
 
@@ -204,7 +213,7 @@ The post describes permissions on individual directories, so sensitive code can 
 - The exact skip-list definition: binary lifting on the first-parent chain.
 - Conservative three-way merge: adjacent edits conflict.
 - HTTP/1.1 with a custom frame format instead of gRPC. There is no codegen, and `curl` works.
-- SQLite instead of Spanner, so there is one authoritative server process today. There can be any number of cache tiers.
+- SQLite and a local directory by default, with Postgres and S3-compatible storage for running several servers, instead of Spanner and cloud storage.
 
 ## HTTP API
 

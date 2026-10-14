@@ -162,6 +162,8 @@ kudzu import --store ./data --git /path/to/repo --as main
 kudzu export --store ./data --git /path/to/mirror.git --ref main
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
+# or several stateless servers sharing Postgres and an S3-compatible bucket:
+#   kudzu server --meta postgres://... --objects s3://bucket/kudzu --listen ...
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
 kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock

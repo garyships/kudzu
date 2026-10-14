@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/user"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -300,15 +299,16 @@ func cmdSparse(ctx context.Context, args []string) error {
 func cmdGC(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
 	max := fs.String("max-size", "1GB", "target size of the local object cache")
-	storeDir := fs.String("store", "", "collect a server store instead: remove changesets no ref reaches, and objects only they used")
-	keep := fs.String("keep", "30d", "with --store: grace period; anything newer is kept (e.g. 12h, 7d, 2w)")
-	dryRun := fs.Bool("dry-run", false, "with --store: report what would be removed without removing it")
+	stores := addStoreFlags(fs, "")
+	keep := fs.String("keep", "30d", "with --store/--meta/--objects: grace period; anything newer is kept (e.g. 12h, 7d, 2w)")
+	dryRun := fs.Bool("dry-run", false, "with --store/--meta/--objects: report what would be removed without removing it")
 	addJSONFlag(fs)
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
-	if *storeDir != "" {
-		return storeGC(ctx, *storeDir, *keep, *dryRun)
+	// With a server store, collect its garbage instead of the working copy's.
+	if stores.set() {
+		return storeGC(ctx, stores, *keep, *dryRun)
 	}
 	n, err := parseSize(*max)
 	if err != nil {
@@ -329,18 +329,15 @@ func cmdGC(ctx context.Context, args []string) error {
 	return nil
 }
 
-func storeGC(ctx context.Context, dir, keep string, dryRun bool) error {
+func storeGC(ctx context.Context, stores storeFlags, keep string, dryRun bool) error {
 	grace, err := parseDuration(keep)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(dir, "meta.db")); err != nil {
-		return fmt.Errorf("%s is not a kudzu store: %w", dir, err)
-	}
 	if grace < time.Hour {
-		fmt.Fprintf(os.Stderr, "warning: a grace period under 1h is only safe when no server is using %s\n", dir)
+		fmt.Fprintln(os.Stderr, "warning: a grace period under 1h is only safe when no server is using the store")
 	}
-	r, closeRepo, err := openRepo(dir, 64<<20)
+	r, closeRepo, err := stores.open(ctx, 64<<20, true)
 	if err != nil {
 		return err
 	}

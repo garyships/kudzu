@@ -38,7 +38,7 @@
 
 | 角色 | 接口 | 现有实现 | 生产环境可换成 |
 |---|---|---|---|
-| 权威元数据（changeset 日志、ref、派生数据） | `store.Meta` | SQLite，WAL 模式（`meta.go`） | Spanner、Postgres、CockroachDB |
+| 权威元数据（changeset 日志、ref、派生数据） | `store.Meta` | SQLite，WAL 模式（`meta.go`）；Postgres（`postgres.go`） | Spanner、CockroachDB |
 | 不可变对象 | `store.Objects` | 本地目录 `FS`、内存 LRU `Mem`、两者叠加 `Cached` | S3、GCS |
 
 SQLite 的表结构：
@@ -49,6 +49,15 @@ SQLite 的表结构：
 - `mapping(ns, key, value)`：git sha 到 changeset（`git`）以及 changeset 到 git sha（`git-export`）的映射，用来做增量导入和导出
 
 创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
+
+### 多台服务端（`--meta`、`--objects`）
+
+默认配置下只有一个权威服务端进程。`kudzu server --meta postgres://… --objects s3://bucket/prefix` 把两种存储都放到共享服务里，于是可以在负载均衡后面跑任意多台无状态服务端，正是文章的设计：
+
+- **Postgres** 用同样的四张表。移动 ref 是 `UPDATE refs … WHERE name = $1 AND target = $old` 再检查影响的行数，所以不同服务端上的 land 竞争方式和单进程完全一样：输的一方 rebase 后重试。派生数据用 `INSERT … ON CONFLICT DO NOTHING`，因为每台服务端算出的值都一样。唯一要注意的是日志：序列在插入时而不是提交时分配 `seq`，两个并发追加可能乱序提交，`/api/wal` 的读者就可能漏掉一条。所以追加时会在单行插入外面持有一个事务级 advisory lock，保证提交顺序就是日志顺序。
+- **兼容 S3 的存储桶**把对象存在 `prefix/ab/cdef…` 下。对象不可变，服务端之间不需要协调，每台服务端的内存缓存可以无限期保留任何对象。Kudzu 自己签名请求（AWS Signature V4，用 AWS 文档里的示例校验过），不依赖云厂商 SDK。`gs://` 走 GCS 兼容 S3 的 XML API（HMAC 密钥）；`?endpoint=` 可以指向 MinIO、R2 或其他兼容 S3 的服务。gc 的 touch 是把对象在服务端复制到自身，刷新 `Last-Modified` 而不传输数据。
+
+设置 `KUDZU_TEST_POSTGRES` 和 `KUDZU_TEST_S3` 后，repo 和端到端测试也会跑在这些后端上（`internal/store/storetest`）；CI 用 Postgres 和 MinIO 跑一遍。
 
 ### 垃圾回收（`internal/repo/gc.go`）
 
@@ -192,7 +201,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 跳表的具体定义（第一父链上的二进制提升）
 - 三方合并的规则：相邻的修改也算冲突，比较保守
 - 传输层用 HTTP/1.1 加自定义帧格式，没用 gRPC，这样不需要代码生成，用 curl 也能调
-- 用 SQLite 代替 Spanner，所以目前只能有一个权威服务端进程（缓存层可以有任意多个）
+- 默认用 SQLite 和本地目录，多台服务端时用 Postgres 和兼容 S3 的存储，而不是 Spanner 和云存储
 
 ## API 一览
 

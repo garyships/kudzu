@@ -27,6 +27,7 @@ import (
 	"github.com/garyships/kudzu/internal/server"
 	"github.com/garyships/kudzu/internal/sparse"
 	"github.com/garyships/kudzu/internal/store"
+	"github.com/garyships/kudzu/internal/store/storetest"
 	"github.com/garyships/kudzu/internal/tier"
 )
 
@@ -44,16 +45,7 @@ func newStack(t *testing.T) *stack { return newStackAuth(t, nil) }
 func newStackAuth(t *testing.T, policy *auth.Policy) *stack {
 	t.Helper()
 	dir := t.TempDir()
-	meta, err := store.OpenSQLite(filepath.Join(dir, "meta.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { meta.Close() })
-	objs, err := store.OpenFS(filepath.Join(dir, "objects"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := repo.New(meta, &store.Cached{Mem: store.NewMem(64 << 20), Backing: objs})
+	r := repo.New(storetest.Meta(t), &store.Cached{Mem: store.NewMem(64 << 20), Backing: storetest.Objects(t)})
 	s := &stack{repo: r}
 	srv := server.New(r, log.New(io.Discard, "", 0))
 	srv.Auth = policy

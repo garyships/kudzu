@@ -20,3 +20,35 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race ./...
+
+  # The repo, end-to-end and store tests again, against the shared backends
+  # several servers use: Postgres for metadata and S3 (MinIO) for objects.
+  backends:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: kudzu
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      KUDZU_TEST_POSTGRES: postgres://postgres:kudzu@127.0.0.1:5432/postgres?sslmode=disable
+      KUDZU_TEST_S3: s3://kudzu-test?endpoint=http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: kudzu
+      AWS_SECRET_ACCESS_KEY: kudzu-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID -e MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
+            minio/minio server /data
+          for i in $(seq 60); do curl -sf http://127.0.0.1:9000/minio/health/ready && break; sleep 1; done
+          docker run --rm --network host --entrypoint sh minio/mc -c \
+            "mc alias set local http://127.0.0.1:9000 $AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY && mc mb local/kudzu-test"
+      - run: go test -race ./internal/store/... ./internal/repo/ ./internal/e2e/

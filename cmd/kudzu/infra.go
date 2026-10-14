@@ -25,6 +25,78 @@ import (
 	"github.com/garyships/kudzu/internal/tier"
 )
 
+// storeFlags select a server's storage: a local directory by default, or
+// shared backends that let several stateless servers serve one repository.
+type storeFlags struct {
+	dir, meta, objects *string
+}
+
+func addStoreFlags(fs *flag.FlagSet, defaultDir string) storeFlags {
+	return storeFlags{
+		dir:     fs.String("store", defaultDir, "store directory (meta.db + objects/)"),
+		meta:    fs.String("meta", "", "shared metadata database instead of <store>/meta.db (postgres://user:pass@host/db)"),
+		objects: fs.String("objects", "", "shared object store instead of <store>/objects (s3://bucket/prefix?endpoint=URL&region=R, gs://bucket/prefix; credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"),
+	}
+}
+
+func (sf storeFlags) set() bool { return *sf.dir != "" || *sf.meta != "" || *sf.objects != "" }
+
+// open opens the selected stores. With mustExist, a local store that has no
+// meta.db yet is an error rather than a new, empty repository.
+func (sf storeFlags) open(ctx context.Context, memBytes int64, mustExist bool) (*repo.Repo, func(), error) {
+	if *sf.meta == "" && *sf.objects == "" {
+		if mustExist {
+			if _, err := os.Stat(filepath.Join(*sf.dir, "meta.db")); err != nil {
+				return nil, nil, fmt.Errorf("%s is not a kudzu store: %w", *sf.dir, err)
+			}
+		}
+		return openRepo(*sf.dir, memBytes)
+	}
+	if *sf.dir == "" && (*sf.meta == "" || *sf.objects == "") {
+		return nil, nil, errors.New("pass --store for whichever of --meta and --objects is not given")
+	}
+	var meta store.Meta
+	if u := *sf.meta; u != "" {
+		if !strings.HasPrefix(u, "postgres://") && !strings.HasPrefix(u, "postgresql://") {
+			return nil, nil, fmt.Errorf("unsupported --meta %q (use postgres://...)", u)
+		}
+		pg, err := store.OpenPostgres(ctx, u)
+		if err != nil {
+			return nil, nil, err
+		}
+		meta = pg
+	} else {
+		if err := os.MkdirAll(*sf.dir, 0o755); err != nil {
+			return nil, nil, err
+		}
+		sq, err := store.OpenSQLite(filepath.Join(*sf.dir, "meta.db"))
+		if err != nil {
+			return nil, nil, err
+		}
+		meta = sq
+	}
+	var objs store.Objects
+	if u := *sf.objects; u != "" {
+		cfg, err := store.ParseObjectsURL(u)
+		if err == nil {
+			objs, err = store.OpenS3(ctx, cfg)
+		}
+		if err != nil {
+			meta.Close()
+			return nil, nil, err
+		}
+	} else {
+		fs, err := store.OpenFS(filepath.Join(*sf.dir, "objects"), 0)
+		if err != nil {
+			meta.Close()
+			return nil, nil, err
+		}
+		objs = fs
+	}
+	r := repo.New(meta, &store.Cached{Mem: store.NewMem(memBytes), Backing: objs})
+	return r, func() { meta.Close() }, nil
+}
+
 func openRepo(dir string, memBytes int64) (*repo.Repo, func(), error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, nil, err
@@ -79,7 +151,7 @@ func serveListener(ctx context.Context, l net.Listener, h http.Handler) error {
 
 func cmdServer(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
-	dir := fs.String("store", "kudzu-data", "store directory (meta.db + objects/)")
+	stores := addStoreFlags(fs, "kudzu-data")
 	addr := fs.String("listen", "127.0.0.1:7070", "listen address (host:port or unix:///path)")
 	mem := fs.String("mem", "512MB", "in-memory object cache size")
 	lazy := fs.String("lazy", "", "comma-separated derived types to compute lazily (gen, unode)")
@@ -98,7 +170,7 @@ func cmdServer(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	r, closeRepo, err := openRepo(*dir, memBytes)
+	r, closeRepo, err := stores.open(ctx, memBytes, false)
 	if err != nil {
 		return err
 	}
@@ -207,14 +279,14 @@ func cmdDaemon(ctx context.Context, args []string) error {
 
 func cmdImport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
-	dir := fs.String("store", "kudzu-data", "server store directory")
+	stores := addStoreFlags(fs, "kudzu-data")
 	gitDir := fs.String("git", ".", "git repository to import from")
 	ref := fs.String("ref", "HEAD", "git revision to import")
 	as := fs.String("as", "main", "kudzu ref to point at the imported tip")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
-	r, closeRepo, err := openRepo(*dir, 256<<20)
+	r, closeRepo, err := stores.open(ctx, 256<<20, false)
 	if err != nil {
 		return err
 	}
@@ -230,7 +302,7 @@ func cmdImport(ctx context.Context, args []string) error {
 
 func cmdExport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
-	dir := fs.String("store", "kudzu-data", "server store directory")
+	stores := addStoreFlags(fs, "kudzu-data")
 	gitDir := fs.String("git", "", "git repository to write to (bare, or with the branch not checked out)")
 	ref := fs.String("ref", "main", "kudzu revision to export")
 	as := fs.String("as", "", "git branch to point at the exported tip (default: same name as --ref)")
@@ -242,10 +314,7 @@ func cmdExport(ctx context.Context, args []string) error {
 	if *gitDir == "" {
 		return errors.New("--git is required")
 	}
-	if _, err := os.Stat(filepath.Join(*dir, "meta.db")); err != nil {
-		return fmt.Errorf("%s is not a kudzu store: %w", *dir, err)
-	}
-	r, closeRepo, err := openRepo(*dir, 256<<20)
+	r, closeRepo, err := stores.open(ctx, 256<<20, true)
 	if err != nil {
 		return err
 	}
