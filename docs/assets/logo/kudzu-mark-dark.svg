@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <mask id="kzm" maskUnits="userSpaceOnUse" x="-10" y="-10" width="84" height="84">
+      <rect x="-10" y="-10" width="84" height="84" fill="#fff"/>
+      <g fill="#000"><circle cx="22" cy="50" r="2.2"/><circle cx="22" cy="31" r="2.2"/><circle cx="22" cy="12" r="2.2"/></g>
+      <path transform="translate(40 25) rotate(22)" d="M0 -4 L0 -19" stroke="#000" stroke-width="1.7" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g transform="translate(-4 2)">
+    <g mask="url(#kzm)">
+      <g fill="none" stroke="#4ade80" stroke-width="5" stroke-linecap="round">
+        <path d="M22 58 L22 12"/>
+        <path d="M22 44 C22 34 40 36 40 24"/>
+      </g>
+      <g fill="#4ade80"><circle cx="22" cy="50" r="5.5"/><circle cx="22" cy="31" r="5.5"/><circle cx="22" cy="12" r="5.5"/></g>
+      <path transform="translate(40 25) rotate(22)" d="M0 0 C9 -4 14 -14 0 -26 C-14 -14 -9 -4 0 0Z" fill="#4ade80"/>
+    </g>
+  </g>
+</svg>

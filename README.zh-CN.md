@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo/kudzu-icon.svg" width="88" alt="Kudzu logo: a commit graph that grows a leaf">
+
 # Kudzu
 
 ### Anthropic 每天合并 3 万多次代码，git 扛不住，于是他们自研了 Scion，但没有开源。<br/>Kudzu 是照着他们的文章复刻的开源版。

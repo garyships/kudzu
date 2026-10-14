@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo/kudzu-icon.svg" width="88" alt="Kudzu logo: a commit graph that grows a leaf">
+
 # Kudzu
 
 ### Anthropic's monorepo outgrew git at 30,000+ merges a day, so they built Scion and kept it internal.<br/>Kudzu is the open-source rebuild.

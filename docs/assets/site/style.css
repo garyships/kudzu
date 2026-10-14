@@ -217,7 +217,7 @@ button { font: inherit; color: inherit; }
 .nav-inner { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--gutter); height: 64px; display: flex; align-items: center; gap: 24px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); text-decoration: none; font-weight: 650; font-size: 19px; letter-spacing: -.04em; }
 .brand:hover { text-decoration: none; }
-.brand-mark { width: 24px; height: 27px; color: var(--accent-fill); }
+.brand-mark { width: 26px; height: 26px; color: var(--accent-fill); }
 .nav-links { display: flex; gap: 4px; margin-left: 12px; }
 .nav-links a { color: var(--text-2); text-decoration: none; font-size: 14px; padding: 6px 10px; border-radius: 8px; }
 .nav-links a:hover { color: var(--text); background: var(--surface-3); }

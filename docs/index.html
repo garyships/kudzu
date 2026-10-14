@@ -10,6 +10,7 @@
 <meta name="color-scheme" content="dark light">
 <link rel="canonical" href="https://garyships.github.io/kudzu/">
 <link rel="icon" href="assets/site/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/logo/kudzu-icon-512.png">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Kudzu">
@@ -40,6 +41,19 @@
 <!-- Shared SVG symbols -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
+    <mask id="kz-logo-cut" maskUnits="userSpaceOnUse" x="-10" y="-10" width="84" height="84">
+      <rect x="-10" y="-10" width="84" height="84" fill="#fff"/>
+      <g fill="#000"><circle cx="22" cy="50" r="2.2"/><circle cx="22" cy="31" r="2.2"/><circle cx="22" cy="12" r="2.2"/></g>
+      <path transform="translate(40 25) rotate(22)" d="M0 -4 L0 -19" stroke="#000" stroke-width="1.7" stroke-linecap="round"/>
+    </mask>
+    <!-- The Kudzu mark: a commit graph that grows a leaf (docs/assets/logo/) -->
+    <symbol id="i-logo" viewBox="0 0 64 64">
+      <g transform="translate(-4 2)"><g mask="url(#kz-logo-cut)">
+        <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"><path d="M22 58 L22 12"/><path d="M22 44 C22 34 40 36 40 24"/></g>
+        <g fill="currentColor"><circle cx="22" cy="50" r="5.5"/><circle cx="22" cy="31" r="5.5"/><circle cx="22" cy="12" r="5.5"/></g>
+        <path transform="translate(40 25) rotate(22)" d="M0 0 C9 -4 14 -14 0 -26 C-14 -14 -9 -4 0 0Z" fill="currentColor"/>
+      </g></g>
+    </symbol>
     <symbol id="i-leaf" viewBox="-24 -50 48 54">
       <path d="M0 4 L0 -14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".7"/>
       <path transform="translate(0 -13)" d="M0 0 C9 -6 13 -17 0 -32 C-13 -17 -9 -6 0 0Z" fill="currentColor"/>
@@ -61,7 +75,7 @@
 <header class="nav" id="nav">
   <div class="nav-inner">
     <a class="brand" href="#top" aria-label="Kudzu home">
-      <svg class="brand-mark" aria-hidden="true"><use href="#i-leaf"/></svg>
+      <svg class="brand-mark" aria-hidden="true"><use href="#i-logo"/></svg>
       <span>kudzu</span>
     </a>
     <nav class="nav-links" aria-label="Sections">
@@ -396,7 +410,7 @@
       <table class="vs-table">
         <caption class="sr-only">Comparison of git and Kudzu</caption>
         <thead>
-          <tr><th scope="col"><span class="sr-only">Task</span></th><th scope="col" class="col-git">git</th><th scope="col" class="col-kudzu"><svg class="i" aria-hidden="true"><use href="#i-leaf"/></svg>Kudzu</th></tr>
+          <tr><th scope="col"><span class="sr-only">Task</span></th><th scope="col" class="col-git">git</th><th scope="col" class="col-kudzu"><svg class="i" aria-hidden="true"><use href="#i-logo"/></svg>Kudzu</th></tr>
         </thead>
         <tbody>
           <tr>
@@ -517,7 +531,7 @@
         Your browser can't play this video. <a href="assets/demo.mp4">Download the demo</a>.
       </video>
       <div class="video-fallback" id="video-fallback" hidden>
-        <svg class="video-fallback-leaf" aria-hidden="true"><use href="#i-leaf"/></svg>
+        <svg class="video-fallback-leaf" aria-hidden="true"><use href="#i-logo"/></svg>
         <p class="video-fallback-title">The demo video is on its way.</p>
         <p>Meanwhile, the same walkthrough runs locally:</p>
         <div class="code code-inline" data-copy>
@@ -789,7 +803,7 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
   <div class="container footer-inner">
     <div class="footer-brand">
       <a class="brand" href="#top" aria-label="Kudzu, back to top">
-        <svg class="brand-mark" aria-hidden="true"><use href="#i-leaf"/></svg><span>kudzu</span>
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-logo"/></svg><span>kudzu</span>
       </a>
       <p>Open-source version control for agent-scale monorepos.</p>
     </div>
