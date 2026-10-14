@@ -167,7 +167,7 @@ func (w *WC) Update(ctx context.Context, rev string, force bool) error {
 		}
 	}
 	if len(writes) > 0 || len(deletes) > 0 {
-		fmt.Fprintf(w.Out, "updating %d files, removing %d\n", len(writes), len(deletes))
+		fmt.Fprintf(w.Out, "updating %d %s, removing %d\n", len(writes), pick(len(writes) == 1, "file", "files"), len(deletes))
 		if err := w.apply(ctx, writes, deletes); err != nil {
 			return err
 		}

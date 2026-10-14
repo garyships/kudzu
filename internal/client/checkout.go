@@ -325,7 +325,7 @@ func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes 
 	}
 	var fetchErr error
 	if len(remote) > 0 {
-		fmt.Fprintf(w.Out, "fetching %d objects\n", len(remote))
+		fmt.Fprintf(w.Out, "fetching %d %s\n", len(remote), pick(len(remote) == 1, "object", "objects"))
 		var missing []object.ID
 		missing, fetchErr = w.Remote.Fetch(ctx, remote, func(id object.ID, b []byte) error {
 			items <- item{id, b, true}
@@ -390,4 +390,11 @@ func (w *WC) pruneEmptyDirs(dir string) {
 		}
 		dir = filepath.Dir(dir)
 	}
+}
+
+func pick(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
 }

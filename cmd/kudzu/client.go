@@ -95,7 +95,7 @@ func cmdClone(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("checked out %s (%d files) into %s in %s\n", wc.State.Changeset.Short(), len(wc.Index), pos[1], time.Since(start).Round(time.Millisecond))
+	fmt.Printf("checked out %s (%s) into %s in %s\n", wc.State.Changeset.Short(), plural(len(wc.Index), "file", "files"), pos[1], time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
@@ -162,7 +162,7 @@ func cmdCommit(ctx context.Context, args []string) error {
 		}
 		return printJSON(out)
 	}
-	fmt.Printf("created %s (%d files)\n", res.ID.Short(), res.Changes)
+	fmt.Printf("created %s (%s)\n", res.ID.Short(), plural(res.Changes, "file", "files"))
 	if res.Land != nil {
 		printLand(res.Land, *land)
 	}
@@ -174,7 +174,7 @@ func printLand(res *repo.LandResult, ref string) {
 	if res.Rebased {
 		how = "rebased"
 	}
-	fmt.Printf("landed %s on %s (%s, %d attempt(s))\n", res.Landed.Short(), ref, how, res.Attempts)
+	fmt.Printf("landed %s on %s (%s, %s)\n", res.Landed.Short(), ref, how, plural(res.Attempts, "attempt", "attempts"))
 }
 
 func cmdUpdate(ctx context.Context, args []string) error {
@@ -292,7 +292,7 @@ func cmdSparse(ctx context.Context, args []string) error {
 	if err := wc.SetSparse(ctx, sp); err != nil {
 		return err
 	}
-	fmt.Printf("%d files checked out\n", len(wc.Index))
+	fmt.Printf("%s checked out\n", plural(len(wc.Index), "file", "files"))
 	return nil
 }
 
@@ -311,7 +311,7 @@ func cmdGC(ctx context.Context, args []string) error {
 		return err
 	}
 	removed, err := wc.Objs.GC(n)
-	fmt.Printf("removed %d cached objects\n", removed)
+	fmt.Printf("removed %s\n", plural(removed, "cached object", "cached objects"))
 	return err
 }
 
@@ -419,10 +419,7 @@ func cmdBlame(ctx context.Context, args []string) error {
 	}
 	for _, l := range lines {
 		author, _, _ := strings.Cut(l.Author, " <")
-		if len(author) > 16 {
-			author = author[:16]
-		}
-		fmt.Printf("%s %-16s %s %4d) %s", l.Changeset.Short(), author, time.Unix(l.Time, 0).UTC().Format("2006-01-02"), l.Line, l.Text)
+		fmt.Printf("%s %s %s %4d) %s", l.Changeset.Short(), fitWidth(author, 16), time.Unix(l.Time, 0).UTC().Format("2006-01-02"), l.Line, l.Text)
 		if !strings.HasSuffix(l.Text, "\n") {
 			fmt.Println()
 		}
@@ -743,7 +740,7 @@ func cmdWrite(ctx context.Context, args []string) error {
 		}
 		return printJSON(out)
 	}
-	fmt.Printf("created %s (%d files, %d blobs uploaded)\n", resp.ID.Short(), len(changes), len(send))
+	fmt.Printf("created %s (%s, %s uploaded)\n", resp.ID.Short(), plural(len(changes), "file", "files"), plural(len(send), "blob", "blobs"))
 	if resp.Land != nil {
 		printLand(resp.Land, *land)
 	}

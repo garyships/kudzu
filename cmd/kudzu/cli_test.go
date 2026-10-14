@@ -221,3 +221,19 @@ func TestMCPCommand(t *testing.T) {
 		t.Fatalf("responses = %q", got)
 	}
 }
+
+func TestFitWidth(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"alice", "alice     "},
+		{"翠", "翠        "},
+		{"verylongauthorname", "verylongau"},
+		{"山田太郎さん", "山田太郎さ"},
+	} {
+		if got := fitWidth(c.in, 10); got != c.want {
+			t.Errorf("fitWidth(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if plural(1, "file", "files") != "1 file" || plural(2, "file", "files") != "2 files" {
+		t.Error("plural")
+	}
+}

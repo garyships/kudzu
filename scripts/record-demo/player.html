@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920">
+<title>Kudzu demo player</title>
+<!--
+  Replays transcript.json (written by run-scenario.mjs) as a 1920x1080 video.
+  Everything shown in the terminals, and every number in the captions and
+  charts, is read from the transcript. The page is a pure function of time:
+  record.mjs calls window.renderAt(seconds) and screenshots each frame.
+  To watch it in a browser, write a self-contained copy with the transcript
+  inlined (record.mjs --preview out.html) and open that; ?t=SECONDS shows one frame.
+-->
+<style>
+:root {
+  --bg: #080c11;
+  --text: #e8eef4;
+  --muted: #9aa7b6;
+  --dim: #5f6d7d;
+  --line: rgba(255, 255, 255, .085);
+  --green: #7fe3a9;
+  --green2: #3cba78;
+  --amber: #f1c46d;
+  --blue: #82b9ff;
+  --cyan: #73d8e6;
+  --violet: #c8a6ff;
+  --orange: #ff9e64;
+  --red: #ff7b72;
+  --mono: "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", "WenQuanYi Zen Hei Mono", monospace;
+  --sans: "Inter", "Inter Display", "DejaVu Sans", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); }
+#stage {
+  position: relative; width: 1920px; height: 1080px; overflow: hidden;
+  font-family: var(--sans); color: var(--text);
+  background:
+    radial-gradient(1100px 620px at 4% -12%, rgba(60, 186, 120, .17), transparent 62%),
+    radial-gradient(900px 560px at 104% 112%, rgba(130, 185, 255, .10), transparent 60%),
+    var(--bg);
+}
+#vines { position: absolute; inset: 0; pointer-events: none; opacity: .5; }
+
+/* top bar */
+#top { position: absolute; left: 48px; right: 48px; top: 26px; height: 52px; display: flex; align-items: center; }
+#brand { display: flex; align-items: center; gap: 14px; font-weight: 650; font-size: 30px; letter-spacing: -.01em; }
+#brand svg { width: 40px; height: 40px; }
+#chapters { margin-left: auto; display: flex; gap: 10px; }
+.pill {
+  font-size: 19px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--dim); display: flex; align-items: center; gap: 9px; white-space: nowrap;
+}
+.pill b { font-family: var(--mono); font-weight: 500; font-size: 16px; }
+.pill.done { color: var(--muted); }
+.pill.done b { color: var(--green2); }
+.pill.on { background: rgba(127, 227, 169, .14); border-color: rgba(127, 227, 169, .55); color: var(--text); }
+.pill.on b { color: var(--green); }
+
+/* terminals */
+#term { position: absolute; left: 48px; top: 100px; width: 1824px; height: 682px; display: flex; gap: 24px; }
+.win {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; border-radius: 16px; overflow: hidden;
+  background: linear-gradient(180deg, #10161e, #0b1016); border: 1px solid var(--line);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+.bar { height: 46px; flex: 0 0 46px; display: flex; align-items: center; padding: 0 18px; gap: 9px;
+  background: rgba(255, 255, 255, .025); border-bottom: 1px solid var(--line); position: relative; }
+.dot { width: 13px; height: 13px; border-radius: 50%; }
+.wtitle { position: absolute; left: 0; right: 0; text-align: center; font-size: 18px; color: var(--muted); pointer-events: none; }
+.wtitle b { color: var(--text); font-weight: 600; }
+.speed { margin-left: auto; z-index: 1; font-size: 16px; font-weight: 600; letter-spacing: .02em; padding: 5px 12px;
+  border-radius: 999px; color: #1a1408; background: var(--amber); }
+.speed.slow { background: var(--cyan); color: #06181b; }
+.body { flex: 1 1 auto; position: relative; overflow: hidden; padding: 16px 26px; font-family: var(--mono); }
+.lines { position: absolute; left: 26px; right: 26px; top: 16px; }
+.single .body { font-size: 25px; line-height: 1.44; }
+.split .body { font-size: 21px; line-height: 1.45; }
+.row { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.44em; }
+.ps { color: var(--green); font-weight: 700; }
+.c { color: var(--text); }
+.c .k { color: var(--green); font-weight: 600; }
+.c .f { color: var(--blue); }
+.c .s { color: var(--amber); }
+.o { color: #c3ccd6; }
+.e { color: var(--muted); }
+.id { color: var(--amber); }
+.ff { color: var(--green); }
+.rb { color: var(--cyan); }
+.hot { color: var(--orange); font-weight: 600; }
+.num { color: var(--violet); }
+.key { color: var(--blue); }
+.wide { display: inline-block; width: 2ch; }
+.cur { display: inline-block; width: .6em; height: 1.08em; vertical-align: -.2em; background: var(--green); margin-left: 1px; }
+.cur.off { opacity: 0; }
+.badge { display: inline-block; margin-left: 18px; font-family: var(--sans); font-size: .7em; font-weight: 600; vertical-align: .12em;
+  padding: 2px 11px; border-radius: 999px; border: 1px solid rgba(241, 196, 109, .6); color: var(--amber); white-space: nowrap; }
+.badge.run { border-color: rgba(115, 216, 230, .6); color: var(--cyan); }
+.badge.bg { border-color: rgba(127, 227, 169, .5); color: var(--green); }
+
+/* lower third */
+#lower { position: absolute; left: 48px; right: 48px; top: 806px; height: 216px; display: flex; gap: 40px; }
+#cap { flex: 0 0 960px; border-left: 4px solid var(--green2); padding: 4px 0 0 26px; position: relative; }
+#cap .num { font-family: var(--mono); color: var(--green); font-size: 21px; letter-spacing: .08em; }
+#cap h2 { margin: 4px 0 10px; font-size: 40px; font-weight: 650; letter-spacing: -.015em; line-height: 1.1; }
+#cap p { margin: 0; font-size: 25px; line-height: 1.42; color: var(--muted); }
+#cap p em { font-style: normal; color: var(--text); }
+#cap code { font-family: var(--mono); font-size: .9em; color: var(--text); }
+#widget { flex: 1 1 auto; position: relative; }
+
+/* footer */
+#foot { position: absolute; left: 48px; right: 48px; bottom: 16px; height: 30px; display: flex; align-items: center;
+  font-size: 19px; color: var(--dim); }
+#foot .right { margin-left: auto; font-family: var(--mono); font-size: 18px; color: var(--muted); }
+
+/* widgets */
+.wcard { position: absolute; inset: 0; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, .025); padding: 16px 20px; }
+.wlabel { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+.big { font-size: 46px; font-weight: 700; letter-spacing: -.02em; }
+.big small { font-size: 22px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
+.track { height: 14px; border-radius: 7px; background: rgba(255, 255, 255, .06); overflow: hidden; }
+.fill { height: 100%; border-radius: 7px; background: linear-gradient(90deg, var(--green2), var(--green)); }
+.bars { display: grid; grid-template-columns: 340px 1fr 92px; row-gap: 9px; column-gap: 14px; align-items: center; font-size: 17px; }
+.bars .lbl { font-family: var(--mono); font-size: 15.5px; color: var(--text); white-space: nowrap; overflow: hidden; }
+.bars .lbl span { color: var(--dim); }
+.bars .t { font-family: var(--mono); font-size: 17px; text-align: right; color: var(--text); }
+.bars .bar2 { height: 22px; border-radius: 6px; background: rgba(255, 255, 255, .05); position: relative; }
+.bars .bar2 i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; }
+.kz { background: linear-gradient(90deg, var(--green2), var(--green)); }
+.gt { background: linear-gradient(90deg, #6d7f95, #9fb0c4); }
+.note { font-size: 16px; color: var(--dim); }
+.tiers { display: flex; align-items: stretch; gap: 0; height: 100%; }
+.tier { flex: 1 1 0; border: 1px solid var(--line); border-radius: 12px; padding: 18px 16px; background: rgba(255, 255, 255, .02); color: var(--dim); }
+.tier h4 { margin: 0 0 8px; font-size: 21px; color: inherit; line-height: 1.15; }
+.tier div { font-size: 16px; line-height: 1.4; }
+.tier code { display: block; margin-top: 8px; font-family: var(--mono); font-size: 14px; color: var(--amber); }
+.tier:not(.on) code { color: inherit; }
+.tier.on { border-color: rgba(127, 227, 169, .6); background: rgba(127, 227, 169, .08); color: var(--text); }
+.tier.on div { color: var(--muted); }
+.arrow { flex: 0 0 34px; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 22px; }
+.arrow.on { color: var(--green); }
+.hrow { display: grid; grid-template-columns: 250px 120px 1fr; align-items: center; height: 54px; border-bottom: 1px solid var(--line); font-size: 19px; }
+.hrow:last-child { border-bottom: 0; }
+.hrow code { font-family: var(--mono); font-size: 18px; color: var(--text); }
+.hrow .ms { font-family: var(--mono); color: var(--amber); font-size: 20px; }
+.hrow .d { color: var(--muted); font-size: 17px; }
+.tiles { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+.tile { height: 46px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--mono);
+  font-size: 18px; font-weight: 600; border: 1px solid var(--line); color: var(--dim); }
+.tile.a1 { background: rgba(127, 227, 169, .16); border-color: rgba(127, 227, 169, .55); color: var(--green); }
+.tile.a2 { background: rgba(241, 196, 109, .14); border-color: rgba(241, 196, 109, .55); color: var(--amber); }
+.tile.a4 { background: rgba(255, 158, 100, .16); border-color: rgba(255, 158, 100, .6); color: var(--orange); }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; height: 100%; }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: rgba(255, 255, 255, .025); }
+.card .v { font-size: 40px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 2px; }
+.card .v.g { color: var(--green); }
+.card .d { font-size: 16.5px; color: var(--muted); line-height: 1.35; }
+.gantt { position: relative; height: 150px; margin: 10px 24px 0 0; }
+.glane { position: absolute; left: 0; right: 0; height: 52px; }
+.glane .gl { font-size: 17px; color: var(--muted); white-space: nowrap; }
+.glane .gl b { font-family: var(--mono); color: var(--text); font-weight: 600; margin-right: 10px; }
+.glane .gl .ff, .glane .gl .rb { font-weight: 600; }
+.glane .gt2 { position: absolute; left: 0; right: 0; top: 28px; height: 16px; }
+.glane .gt2 i { position: absolute; top: 0; bottom: 0; border-radius: 5px; }
+.gaxis { position: absolute; left: 0; right: 0; top: 116px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 14px; color: var(--dim); }
+.gaxis span { position: absolute; top: 6px; transform: translateX(-50%); white-space: nowrap; }
+.gaxis span:first-child { transform: none; }
+.gaxis span:last-child { transform: translateX(-100%); }
+/* race stopwatches inside the split panes */
+.watches { position: absolute; left: 26px; right: 26px; top: 300px; display: flex; flex-direction: column; gap: 12px; font-family: var(--sans); }
+.watch { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 22px; background: rgba(255, 255, 255, .03); }
+.watch .wl { font-size: 20px; color: var(--muted); line-height: 1.3; }
+.watch .wl b { display: block; font-family: var(--mono); font-size: 18px; color: var(--text); font-weight: 500; }
+.watch .wv { font-family: var(--mono); font-size: 60px; font-weight: 600; letter-spacing: -.02em; color: var(--cyan); }
+.watch.done .wv { color: var(--amber); }
+.watch.done.first .wv { color: var(--green); }
+
+/* cards: title and closing */
+#card { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+#card .logo svg { width: 132px; height: 132px; }
+#card h1 { font-family: "Inter Display", var(--sans); font-size: 148px; font-weight: 750; letter-spacing: -.035em; margin: 6px 0 4px; line-height: 1; }
+#card .tag { font-size: 50px; font-weight: 550; letter-spacing: -.015em; margin: 6px 0 22px; }
+#card .tag span { color: var(--green); }
+#card .sub { font-size: 27px; color: var(--muted); }
+#card .chip { margin-top: 54px; font-size: 22px; color: var(--text); padding: 12px 24px; border-radius: 999px; border: 1px solid rgba(127, 227, 169, .45); background: rgba(127, 227, 169, .08); }
+#card .chip b { color: var(--green); font-weight: 600; }
+#card .fine { position: absolute; bottom: 44px; font-size: 20px; color: var(--dim); }
+#card .url { font-family: var(--mono); font-size: 46px; color: var(--green); margin: 10px 0 18px; }
+.recap { display: grid; grid-template-columns: repeat(4, 330px); gap: 18px; margin-top: 44px; }
+.recap .card { text-align: left; }
+.recap .card .v { font-size: 38px; }
+#fade { position: absolute; inset: 0; background: var(--bg); pointer-events: none; opacity: 0; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <svg id="vines" viewBox="0 0 1920 1080" fill="none" stroke="#3cba78" stroke-linecap="round">
+    <path d="M-40 980 C 220 900 260 760 420 720 S 700 760 820 640" stroke-width="2" opacity=".18"/>
+    <path d="M1960 120 C 1720 180 1700 320 1540 360 S 1260 330 1150 430" stroke-width="2" opacity=".14"/>
+    <path d="M-30 1040 C 300 1010 420 940 560 960" stroke-width="1.5" opacity=".12"/>
+  </svg>
+  <header id="top">
+    <div id="brand"><svg viewBox="0 0 64 64" id="logo-s"></svg>Kudzu</div>
+    <nav id="chapters"></nav>
+  </header>
+  <main id="term"></main>
+  <section id="lower"><div id="cap"></div><div id="widget"></div></section>
+  <footer id="foot"><span id="footnote"></span><span class="right">github.com/garyships/kudzu</span></footer>
+  <div id="card" class="hidden"></div>
+  <div id="fade"></div>
+</div>
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// transcript access: everything on screen comes from here
+// ---------------------------------------------------------------------------
+const TR = window.TRANSCRIPT;
+if (!TR) throw new Error('window.TRANSCRIPT is not set (see record.mjs)');
+const STEP = Object.fromEntries(TR.steps.map((s) => [s.id, s]));
+const S = (id) => { const s = STEP[id]; if (!s) throw new Error('missing step ' + id); return s; };
+const ms = (id) => S(id).end - S(id).start;
+const grab = (id, re) => {
+  for (const l of S(id).lines) { const m = l.text.match(re); if (m) return m; }
+  throw new Error(`no line matching ${re} in step ${id}`);
+};
+const stat = (id, key) => Number(grab(id, new RegExp(`"${key}": ([0-9.]+)`))[1]);
+const fmtMs = (v) => (v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(2)} s`);
+const fmtN = (n) => Number(n).toLocaleString('en-US');
+const SUBJ = TR.meta.subject;
+// how many parallel jobs a step started (from its command) and how many finished (from its output)
+const started = (id) => +S(id).cmd.match(/seq (\d+)/)[1];
+const countOut = (id, re) => S(id).lines.filter((l) => re.test(l.text)).length;
+const WRITERS = started('burst'), LANDED = countOut('burst', /^landed /);
+const JOBS = started('ci'), CLONED = countOut('ci', /^checked out /);
+const HOST = TR.meta.host;
+
+// ---------------------------------------------------------------------------
+// small helpers
+// ---------------------------------------------------------------------------
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const ease = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const hash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+const rnd = (seed) => () => { seed = (Math.imul(seed ^ (seed >>> 15), 2246822507) + 0x9e3779b9) >>> 0; return seed / 4294967296; };
+const fadeIn = (t, at, d = 0.35) => ease((t - at) / d);
+// East Asian wide characters take two terminal columns
+const WIDE = new RegExp('([' + [[0x1100, 0x115f], [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6]]
+  .map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b)).join('') + '])', 'g');
+
+let logoN = 0;
+const logo = () => { const id = 'lg' + (++logoN); return LOGO.replace(/__ID__/g, id); };
+const LOGO = `<defs><linearGradient id="__ID__" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9cf0bf"/><stop offset="1" stop-color="#2fa86a"/></linearGradient></defs>
+  <g fill="url(#__ID__)">
+    <path d="M32 33 C 20 30 12 20 14 8 C 26 9 34 19 32 33 Z"/>
+    <path d="M32 33 C 44 30 52 20 50 8 C 38 9 30 19 32 33 Z" opacity=".85"/>
+    <path d="M32 33 C 24 40 22 52 32 60 C 42 52 40 40 32 33 Z" opacity=".7"/>
+  </g>`;
+document.getElementById('logo-s').innerHTML = logo();
+
+const TITLE_LOGO = logo(), END_LOGO = logo();
+
+// syntax colouring of commands and output (presentation only, text unchanged)
+function hlCmd(cmd) {
+  let h = esc(cmd);
+  h = h.replace(/('[^']*'|"[^"]*")/g, '<span class="s">$1</span>');
+  h = h.replace(/(^|\s)(--?[a-zA-Z][\w-]*)/g, '$1<span class="f">$2</span>');
+  h = h.replace(/(^|;\s|\|\s|do\s)(kudzu|git|export|echo|sed|for|grep)\b/g, '$1<span class="k">$2</span>');
+  return h.replace(WIDE, '<span class="wide">$1</span>');
+}
+function hlOut(text, fd) {
+  let h = esc(text);
+  if (/^\s+"\w+": /.test(text)) {
+    h = h.replace(/^(\s+)(&quot;|")(\w+)("|&quot;)(: )([0-9.]+)/, '$1<span class="key">"$3"</span>$5<span class="num">$6</span>');
+  } else {
+    h = h.replace(/\b([0-9a-f]{12})\b/g, '<span class="id">$1</span>');
+    h = h.replace(/\bfast-forward\b/g, '<span class="ff">fast-forward</span>');
+    h = h.replace(/\brebased\b/g, '<span class="rb">rebased</span>');
+    h = h.replace(/\b(\d+) attempt\(s\)/g, (m, n) => (Number(n) > 1 ? `<span class="hot">${m}</span>` : m));
+    h = h.replace(/^([MAD]) /, (m, c) => `<span class="${c === 'D' ? 'hot' : 'ff'}">${c}</span> `);
+  }
+  h = h.replace(WIDE, '<span class="wide">$1</span>');
+  return `<div class="row ${fd === 'err' ? 'e' : 'o'}">${h}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// timeline model
+// ---------------------------------------------------------------------------
+// A pane holds blocks: one typed command and its output lines, each with the
+// video time at which it appears. Output times are the recorded arrival times,
+// multiplied by the step's `stretch` (1 = real time; the speed badge says so
+// whenever it is not 1).
+function newPane(title) { return { title, blocks: [], speeds: [] }; }
+
+function typeStep(pane, id, at, o = {}) {
+  const s = S(id);
+  const cmd = s.cmd;
+  const stretch = o.stretch ?? 1;
+  const r = rnd(hash(id));
+  const w = [...cmd].map((ch) => (ch === ' ' ? 1.6 : 1) * (0.6 + 0.8 * r()));
+  const sum = w.reduce((a, b) => a + b, 0);
+  const typeDur = o.typeDur ?? clamp(0.2 + cmd.length * 0.022, 0.4, 1.5);
+  const charAt = []; let acc = 0;
+  for (const x of w) { acc += x; charAt.push(at + (acc / sum) * typeDur); }
+  const runAt = at + typeDur + (o.enter ?? 0.22);
+  const real = s.end - s.start;
+  const lines = s.lines.map((l) => ({ at: runAt + ((l.t - s.start) / 1000) * stretch, text: l.text, fd: l.fd }));
+  const endAt = runAt + (real / 1000) * stretch;
+  const b = { id, cmd, typeAt: at, charAt, runAt, endAt, lines, real, stretch, badge: o.badge ?? true, bg: s.cmd.endsWith(' &') };
+  pane.blocks.push(b);
+  if (stretch !== 1) pane.speeds.push({ from: runAt - 0.4, to: endAt + 1.2, stretch });
+  return b;
+}
+
+const scenes = [];
+const CHAPTERS = ['Import', 'Tiers', 'History', 'Clone', 'Land', 'API', 'Caches'];
+let T = 0;
+function addScene(sc) {
+  sc.start = T;
+  sc.end = sc.build(sc, T);
+  T = sc.end;
+  scenes.push(sc);
+}
+
+// ---- title ----------------------------------------------------------------
+addScene({
+  key: 'title', layout: 'card',
+  build: (sc, t0) => t0 + 4.0,
+  card: () => `
+    <div class="logo"><svg viewBox="0 0 64 64">${TITLE_LOGO}</svg></div>
+    <h1>Kudzu</h1>
+    <div class="tag">Version control for <span>agent-scale</span> monorepos</div>
+    <div class="sub">Server-side history · sparse-first clones · lock-free landing · tiered object caches</div>
+    <div class="chip">Real commands, real output — <b>last ${fmtN(SUBJ.commits)} commits of ${esc(SUBJ.slug)}</b></div>
+    <div class="fine">Open source (MIT) · an independent take on the design Anthropic described for Scion · not affiliated with Anthropic</div>`,
+});
+
+// ---- 1. import ------------------------------------------------------------
+const IMPORT_STRETCH = 1 / 3;
+addScene({
+  key: 'import', chapter: 0, layout: 'single',
+  title: 'Import git history',
+  body: () => `Each git commit becomes a <em>changeset</em>: a log record of what changed relative to its first parent.
+    Root trees, path history and ancestry are <em>derived data</em>, computed on the server — clients never download history.`,
+  build(sc, t0) {
+    const p = sc.panes = { main: newPane('<b>agent@node-1</b> — ~/demo') };
+    sc.b = typeStep(p.main, 'import', t0 + 0.6, { stretch: IMPORT_STRETCH });
+    return sc.b.endAt + 2.2;
+  },
+  widget(sc, t) {
+    const b = sc.b;
+    let done = 0, total = SUBJ.commits;
+    for (const l of b.lines) {
+      if (l.at > t) break;
+      const m = l.text.match(/(\d+)\/(\d+) commits/); if (m) { done = +m[1]; total = +m[2]; }
+    }
+    const fin = grab('import', /imported (\d+) new of (\d+) commits/);
+    const finished = t >= b.endAt;
+    return `<div class="wcard">
+      <div class="wlabel">git → changesets</div>
+      <div class="big" style="margin:6px 0 10px">${fmtN(finished ? +fin[1] : done)} <small>of ${fmtN(total)} commits</small></div>
+      <div class="track"><div class="fill" style="width:${(100 * (finished ? 1 : done / total)).toFixed(1)}%"></div></div>
+      <div class="note" style="margin-top:12px;opacity:${fadeIn(t, b.endAt)}">imported in <b style="color:var(--amber)">${fmtMs(b.real)}</b> including derived data · ${fmtN(SUBJ.files)} files at the tip</div>
+    </div>`;
+  },
+});
+
+// ---- 2. tiers -------------------------------------------------------------
+addScene({
+  key: 'tiers', chapter: 1, layout: 'single',
+  title: 'Three tiers, one protocol',
+  body: () => `Server → regional cache → node daemon. Every tier answers the <em>same content-addressed object RPC</em>,
+    so clients never need to know the topology. Each tier coalesces concurrent misses and caps its upstream concurrency.`,
+  build(sc, t0) {
+    const p = sc.panes = { main: newPane('<b>agent@node-1</b> — ~/demo') };
+    let t = t0 + 0.6;
+    sc.marks = {};
+    for (const id of ['server', 'cache', 'daemon']) {
+      const b = typeStep(p.main, id, t, { typeDur: 1.0 });
+      sc.marks[id] = b.lines.find((l) => /listening on/.test(l.text)).at;
+      t = b.endAt + 0.45;
+    }
+    const e = typeStep(p.main, 'export', t, { typeDur: 0.8, badge: false });
+    sc.marks.export = e.endAt;
+    return e.endAt + 2.2;
+  },
+  widget(sc, t) {
+    const on = (k) => (t >= sc.marks[k] ? ' on' : '');
+    const port = (id) => esc(grab(id, /listening on (\S+)/)[1].replace('unix://', ''));
+    return `<div class="tiers">
+      <div class="tier${on('server')}"><h4>server</h4><div>changeset log, refs, derived data</div><code>${port('server')}</code></div>
+      <div class="arrow${on('cache')}">◀</div>
+      <div class="tier${on('cache')}"><h4>regional cache</h4><div>memory, one per region</div><code>${port('cache')}</code></div>
+      <div class="arrow${on('daemon')}">◀</div>
+      <div class="tier${on('daemon')}"><h4>node daemon</h4><div>disk, one per machine</div><code>${port('daemon')}</code></div>
+      <div class="arrow${on('export')}">◀</div>
+      <div class="tier${on('export')}"><h4>agents, CI</h4><div>clone, log, blame, commit, land</div></div>
+    </div>`;
+  },
+});
+
+// ---- 3. history -----------------------------------------------------------
+addScene({
+  key: 'history', chapter: 2, layout: 'single',
+  title: 'History without a checkout',
+  body: () => `There is no working copy on this machine yet. <code>log</code>, path history and <code>blame</code> are server APIs:
+    a path's history follows its own chain of nodes, and blame is derived on first query, then cached for everyone.`,
+  build(sc, t0) {
+    const p = sc.panes = { main: newPane('<b>agent@node-1</b> — ~/demo') };
+    let t = t0 + 0.6;
+    sc.bs = [];
+    for (const [id, hold] of [['log', 1.6], ['logpath', 1.6], ['blame', 2.6]]) {
+      const b = typeStep(p.main, id, t);
+      sc.bs.push(b);
+      t = b.endAt + hold;
+    }
+    return t;
+  },
+  widget(sc, t) {
+    const rows = [
+      ['kudzu log', 'whole-repo history'],
+      ['kudzu log &lt;dir&gt;', 'path history'],
+      ['kudzu blame', 'derived on first query'],
+    ];
+    return `<div class="wcard" style="padding:6px 22px">${rows.map(([c, d], i) => {
+      const b = sc.bs[i];
+      const o = fadeIn(t, b.endAt, 0.3);
+      return `<div class="hrow" style="opacity:${0.25 + 0.75 * o}"><code>${c}</code><span class="ms">${t >= b.endAt ? fmtMs(b.real) : ''}</span><span class="d">${d}</span></div>`;
+    }).join('')}</div>`;
+  },
+});
+
+// ---- 4. clone race --------------------------------------------------------
+const RACE_STRETCH = 3; // shown at 1/3 speed; timers show real time
+addScene({
+  key: 'clone', chapter: 3, layout: 'split',
+  title: 'Sparse clone vs. git clone',
+  body: (sc, t) => (t < sc.round2
+    ? `Agents usually need one corner of the monorepo. A Kudzu clone fetches only the trees and blobs under the sparse paths — <em>no history, no packfile</em>.`
+    : t < sc.round2Done
+    ? `Round two: a checkout of <em>all ${fmtN(SUBJ.files)} files</em> against git's cheapest full snapshot, a shallow <code>--depth 1</code> clone.`
+    : (() => {
+      // phrase the full-checkout comparison from the measured numbers, whichever way they went
+      const r = ms('clone_full') / ms('git_shallow');
+      const how = r > 1.15 ? 'is slower than' : r < 0.87 ? 'is a little faster than' : 'costs about the same as';
+      return `Checking out <em>everything</em> ${how} a shallow git clone here. The win comes from fetching less, and from caches shared across machines.`;
+    })()),
+  build(sc, t0) {
+    const p = sc.panes = { left: newPane('<b>kudzu</b> — agent@node-1 ~/demo'), right: newPane('<b>git</b> — agent@node-1 ~/demo') };
+    const files = (id) => fmtN(+grab(id, /\((\d+) files\)/)[1]);
+    p.left.watches = []; p.right.watches = [];
+    const race = (l, r, at, labels) => {
+      const typeDur = 1.35;
+      const a = typeStep(p.left, l, at, { typeDur, stretch: RACE_STRETCH, badge: false });
+      const b = typeStep(p.right, r, at, { typeDur, stretch: RACE_STRETCH, badge: false });
+      p.left.watches.push({ b: a, label: labels[0], first: a.real < b.real });
+      p.right.watches.push({ b, label: labels[1], first: b.real < a.real });
+      return [a, b];
+    };
+    sc.r1 = race('clone_sparse', 'git_full', t0 + 0.6, [
+      `<b>clone --sparse ${esc(SUBJ.sparse)}</b>${files('clone_sparse')} files, no history`,
+      `<b>clone</b>${fmtN(SUBJ.files)} files + ${fmtN(SUBJ.commits)} commits of history`]);
+    const t1 = Math.max(sc.r1[0].endAt, sc.r1[1].endAt) + 2.1;
+    sc.round2 = t1 - 0.2;
+    sc.r2 = race('clone_full', 'git_shallow', t1, [
+      `<b>clone (everything)</b>${files('clone_full')} files, no history`,
+      `<b>clone --depth 1</b>${fmtN(SUBJ.files)} files + 1 commit`]);
+    sc.round2Done = Math.max(sc.r2[0].endAt, sc.r2[1].endAt);
+    return sc.round2Done + 3.4;
+  },
+  widget(sc, t) {
+    const files = (id) => +grab(id, /\((\d+) files\)/)[1];
+    const items = [
+      [sc.r1[0], `kudzu clone --sparse <span>${files('clone_sparse')} files</span>`, 'kz'],
+      [sc.r1[1], `git clone <span>${fmtN(SUBJ.commits)} commits</span>`, 'gt'],
+      [sc.r2[0], `kudzu clone <span>all ${fmtN(files('clone_full'))} files</span>`, 'kz'],
+      [sc.r2[1], `git clone --depth 1 <span>1 commit</span>`, 'gt'],
+    ];
+    const max = Math.max(...items.map(([b]) => b.real));
+    return `<div class="wcard" style="padding:14px 20px">
+      <div class="bars">${items.map(([b, label, cls]) => {
+        const prog = clamp((t - b.runAt) / (b.endAt - b.runAt), 0, 1);
+        const vis = t >= b.typeAt ? 1 : 0.18;
+        const w = (prog * b.real / max) * 100;
+        const val = t < b.runAt ? '' : fmtMs(prog * b.real);
+        return `<div class="lbl" style="opacity:${vis}">${label}</div>
+          <div class="bar2" style="opacity:${vis}"><i class="${cls}" style="width:${w.toFixed(2)}%"></i></div>
+          <div class="t" style="opacity:${vis};color:${prog >= 1 ? 'var(--amber)' : 'var(--text)'}">${val}</div>`;
+      }).join('')}</div>
+      <div class="note" style="margin-top:10px">Run one after another, replayed side by side in slow motion; all times are real wall-clock time.</div>
+    </div>`;
+  },
+});
+
+// ---- 5. two agents land ---------------------------------------------------
+addScene({
+  key: 'land', chapter: 4, layout: 'split',
+  title: 'Two agents, one file, no lock',
+  body: () => `Both agents edited the same file and landed at once. Landing is a <em>compare-and-swap on one ref row</em>;
+    the later change is rebased on the server with a line-level three-way merge. No merge queue, no lock.`,
+  build(sc, t0) {
+    const p = sc.panes = { left: newPane('<b>agent-1</b>@node-1 — ~/demo/agent-1'), right: newPane('<b>agent-2</b>@node-1 — ~/demo/agent-2') };
+    let t = t0 + 0.6;
+    const pair = (l, r, at, o = {}) => {
+      const typeDur = o.typeDur ?? 1.2;
+      const a = typeStep(p.left, l, at, { typeDur, ...o });
+      const b = typeStep(p.right, r, at + (o.offset ?? 0), { typeDur, ...o });
+      return [a, b];
+    };
+    let [a, b] = pair('edit1', 'edit2', t, { typeDur: 1.4, badge: false });
+    t = Math.max(a.endAt, b.endAt) + 0.4;
+    [a, b] = pair('status1', 'status2', t, { typeDur: 0.55 });
+    t = Math.max(a.endAt, b.endAt) + 0.8;
+    // the two commits started ~1 ms apart in the recording; keep that offset
+    const off = (S('land2').start - S('land1').start) / 1000;
+    sc.land = pair('land1', 'land2', t, { typeDur: 1.25, offset: off });
+    t = Math.max(sc.land[0].endAt, sc.land[1].endAt) + 2.2;
+    [a, b] = pair('update1', 'update2', t, { typeDur: 0.55 });
+    t = Math.max(a.endAt, b.endAt) + 0.9;
+    [a, b] = pair('log3', 'blamegrep', t, { typeDur: 1.15 });
+    return Math.max(a.endAt, b.endAt) + 3.2;
+  },
+  widget(sc, t) {
+    const [l1, l2] = sc.land;
+    const s1 = S('land1'), s2 = S('land2');
+    const t0 = Math.min(s1.start, s2.start);
+    const span = Math.max(s1.end, s2.end) - t0;
+    const step = span > 200 ? 100 : 50;
+    const scale = Math.ceil(span / step) * step;
+    const appear = Math.max(l1.endAt, l2.endAt);
+    const grow = ease((t - appear) / 0.8);
+    const how = (id) => (/rebased/.test(grab(id, /landed .*/)[0])
+      ? '<span class="rb">rebased on the server</span>' : '<span class="ff">fast-forward</span>');
+    const lane = (name, s, id, top) => {
+      const x = ((s.start - t0) / scale) * 100, w = ((s.end - s.start) / scale) * 100 * grow;
+      return `<div class="glane" style="top:${top}px">
+        <div class="gl"><b>${name}</b>${how(id)} · ${fmtMs(s.end - s.start)}</div>
+        <div class="gt2"><i class="kz" style="left:${x}%;width:${w}%"></i></div></div>`;
+    };
+    const ticks = [];
+    for (let v = 0; v <= scale; v += step) ticks.push(`<span style="left:${(v / scale) * 100}%">${v} ms</span>`);
+    return `<div class="wcard" style="opacity:${fadeIn(t, appear - 0.2)}">
+      <div class="wlabel">commit --land, both agents, measured</div>
+      <div class="gantt">
+        ${lane('agent-1', s1, 'land1', 0)}
+        ${lane('agent-2', s2, 'land2', 56)}
+        <div class="gaxis">${ticks.join('')}</div>
+      </div>
+    </div>`;
+  },
+});
+
+// ---- 6. API writes --------------------------------------------------------
+addScene({
+  key: 'api', chapter: 5, layout: 'single',
+  title: 'Commits without a working copy',
+  body: () => `Bots and CI write through the API: upload only the blobs the server lacks, then create a changeset and land it in <em>one call</em>.
+    ${LANDED === WRITERS ? `All ${WRITERS} concurrent writers land` : `${LANDED} of ${WRITERS} concurrent writers land`}; contention only costs another compare-and-swap attempt.`,
+  build(sc, t0) {
+    const p = sc.panes = { main: newPane('<b>release-bot</b>@node-1 — ~/demo  (no working copy)') };
+    let t = t0 + 0.6;
+    let b = typeStep(p.main, 'note', t, { badge: false, typeDur: 1.1 });
+    t = b.endAt + 0.4;
+    b = typeStep(p.main, 'write', t, { typeDur: 1.4 });
+    t = b.endAt + 1.3;
+    b = typeStep(p.main, 'diffstat', t, { typeDur: 0.7 });
+    t = b.endAt + 0.9;
+    sc.burst = typeStep(p.main, 'burst', t, { typeDur: 1.8 });
+    return sc.burst.endAt + 3.6;
+  },
+  widget(sc, t) {
+    const b = sc.burst;
+    const tiles = b.lines.map((l) => ({ at: l.at, n: +l.text.match(/\b(\d+) attempt\(s\)/)[1] }));
+    const all = t >= b.endAt;
+    const maxA = Math.max(...tiles.map((x) => x.n));
+    return `<div class="wcard">
+      <div class="wlabel">${WRITERS} concurrent writers — attempts per land</div>
+      <div class="tiles" style="margin-top:12px">${tiles.map((x) => {
+        const on = x.at <= t;
+        const cls = !on ? '' : x.n === 1 ? 'a1' : x.n < 4 ? 'a2' : 'a4';
+        return `<div class="tile ${cls}">${on ? x.n : ''}</div>`;
+      }).join('')}</div>
+      <div class="note" style="margin-top:12px;opacity:${all ? 1 : 0}"><b style="color:var(--text)">${LANDED} of ${WRITERS} landed</b> in ${fmtMs(b.real)} of wall-clock time · at most ${maxA} attempts · lock-free</div>
+    </div>`;
+  },
+});
+
+// ---- 7. caches ------------------------------------------------------------
+addScene({
+  key: 'caches', chapter: 6, layout: 'single',
+  title: 'Caches that coalesce',
+  body: () => `A second machine starts ${JOBS} CI jobs at once on a cold daemon. Concurrent misses for the same object become
+    <em>one upstream fetch</em>, and the warm regional cache answers instead of the server.`,
+  build(sc, t0) {
+    const p = sc.panes = { main: newPane('<b>ci</b>@node-2 — ~/demo  (a second machine)') };
+    let t = t0 + 0.6;
+    let b = typeStep(p.main, 'daemon_b', t, { typeDur: 1.2 });
+    t = b.endAt + 0.4;
+    b = typeStep(p.main, 'export_b', t, { typeDur: 0.8, badge: false });
+    t = b.endAt + 0.4;
+    b = typeStep(p.main, 'ci', t, { typeDur: 1.5 });
+    t = b.endAt + 1.2;
+    sc.st = {};
+    for (const id of ['stats_b', 'stats_c', 'stats_s']) {
+      b = typeStep(p.main, id, t, { typeDur: id === 'stats_b' ? 1.2 : 1.0 });
+      sc.st[id] = b.endAt;
+      t = b.endAt + (id === 'stats_s' ? 3.0 : 1.0);
+    }
+    return t;
+  },
+  widget(sc, t) {
+    const card = (id, label, value, unit, desc) => {
+      const o = fadeIn(t, sc.st[id]);
+      return `<div class="card"><div class="wlabel">${label}</div>
+        <div style="opacity:${o}"><div class="v g">${value} <small style="font-size:20px;color:var(--muted);font-weight:500">${unit}</small></div>
+        <div class="d">${desc}</div></div></div>`;
+    };
+    return `<div class="cards">
+      ${card('stats_b', 'node-2 daemon', fmtN(stat('stats_b', 'upstream_requests')), 'upstream requests',
+        `for ${fmtN(stat('stats_b', 'objects_served'))} objects served to ${CLONED} jobs; ${fmtN(stat('stats_b', 'coalesced_misses'))} misses coalesced`)}
+      ${card('stats_c', 'regional cache', fmtN(stat('stats_c', 'hits')), 'hits',
+        `node-2 fetched ${fmtN(stat('stats_b', 'upstream_objects'))} objects from it in total`)}
+      ${card('stats_s', 'server', fmtN(stat('stats_s', 'lands')), 'lands',
+        `${fmtN(stat('stats_s', 'land_retries'))} compare-and-swap retries, no lock taken`)}
+    </div>`;
+  },
+});
+
+// ---- closing --------------------------------------------------------------
+addScene({
+  key: 'end', layout: 'card',
+  build: (sc, t0) => t0 + 6.0,
+  card: (sc, t) => {
+    const imp = grab('import', /imported (\d+) new of (\d+) commits/);
+    const tiles = [
+      ['import', `${fmtN(+imp[1])} commits`, `imported in ${fmtMs(ms('import'))}`],
+      ['sparse clone', fmtMs(ms('clone_sparse')), `${grab('clone_sparse', /\((\d+) files\)/)[1]} of ${fmtN(SUBJ.files)} files · full git clone ${fmtMs(ms('git_full'))}`],
+      ['lock-free land', `${WRITERS} writers`, `${LANDED === WRITERS ? 'all' : LANDED} landed in ${fmtMs(ms('burst'))}`],
+      ['coalescing', `${stat('stats_b', 'upstream_requests')} requests`, `upstream for ${CLONED} concurrent CI clones`],
+    ];
+    return `
+      <div class="logo"><svg viewBox="0 0 64 64" style="width:96px;height:96px">${END_LOGO}</svg></div>
+      <h1 style="font-size:112px">Kudzu</h1>
+      <div class="url">github.com/garyships/kudzu</div>
+      <div class="sub">MIT · independent project, not affiliated with Anthropic</div>
+      <div class="recap">${tiles.map(([k, v, d], i) => `<div class="card" style="opacity:${fadeIn(t, sc.start + 0.4 + i * 0.25)}"><div class="wlabel">${k}</div><div class="v g">${v}</div><div class="d">${d}</div></div>`).join('')}</div>
+      <div class="fine">Measured in one recorded run on one machine (${HOST.cpus} vCPU), all tiers local — illustrative, not a benchmark. Subject: ${esc(SUBJ.slug)} (MIT), last ${fmtN(SUBJ.commits)} commits.</div>`;
+  },
+});
+
+const DURATION = T;
+window.DURATION = DURATION;
+window.SCENES = scenes.map((s) => ({ key: s.key, start: s.start, end: s.end }));
+
+// ---------------------------------------------------------------------------
+// rendering
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const FOOT = `Real commands and output from one recorded run · all tiers on one machine (${HOST.cpus} vCPU) · timings illustrative, not a benchmark`;
+let current = null;
+
+function renderPaneLines(p, t) {
+  const rows = [];
+  let last = null;
+  for (const b of p.blocks) {
+    if (t < b.typeAt) break;
+    last = b;
+    const n = b.charAt.filter((x) => x <= t).length;
+    const typing = t < b.runAt;
+    let row = `<span class="ps">$</span> <span class="c">${hlCmd(b.cmd.slice(0, n))}</span>`;
+    if (typing) row += '<span class="cur"></span>';
+    if (b.badge && t >= b.runAt) {
+      const long = (b.endAt - b.runAt) > 0.35;
+      if (t < b.endAt && long) {
+        row += `<span class="badge run">running · ${fmtMs(((t - b.runAt) / b.stretch) * 1000)}</span>`;
+      } else if (t >= b.endAt) {
+        row += b.bg ? `<span class="badge bg">ready in ${fmtMs(b.real)}</span>` : `<span class="badge">real ${fmtMs(b.real)}</span>`;
+      }
+    }
+    rows.push(`<div class="row">${row}</div>`);
+    for (const l of b.lines) if (l.at <= t) rows.push(hlOut(l.text, l.fd));
+  }
+  const blink = (t % 1.0) < 0.6 ? '' : ' off';
+  if (!last || t >= (last.bg ? last.endAt : last.endAt)) {
+    rows.push(`<div class="row"><span class="ps">$</span> <span class="cur${blink}"></span></div>`);
+  }
+  return rows.join('');
+}
+
+function renderWatches(p, t) {
+  const shown = p.watches.filter((w) => t >= w.b.runAt);
+  if (!shown.length) return '';
+  return `<div class="watches">${shown.map((w) => {
+    const b = w.b;
+    const done = t >= b.endAt;
+    const real = done ? b.real : ((t - b.runAt) / b.stretch) * 1000;
+    return `<div class="watch${done ? ' done' : ''}${w.first ? ' first' : ''}"><div class="wl">${w.label}</div><div class="wv">${fmtMs(real)}</div></div>`;
+  }).join('')}</div>`;
+}
+
+function setScene(sc) {
+  current = sc;
+  const card = $('card');
+  const isCard = sc.layout === 'card';
+  card.classList.toggle('hidden', !isCard);
+  for (const id of ['top', 'term', 'lower', 'foot']) $(id).classList.toggle('hidden', isCard);
+  if (isCard) return;
+  $('chapters').innerHTML = CHAPTERS.map((c, i) => {
+    const cls = i < sc.chapter ? 'done' : i === sc.chapter ? 'on' : '';
+    return `<div class="pill ${cls}"><b>${String(i + 1).padStart(2, '0')}</b>${c}</div>`;
+  }).join('');
+  const term = $('term');
+  term.className = sc.layout;
+  term.innerHTML = Object.keys(sc.panes).map((k) => `
+    <div class="win" data-pane="${k}">
+      <div class="bar"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+        <div class="wtitle">${sc.panes[k].title}</div><span class="speed hidden"></span></div>
+      <div class="body"><div class="lines"></div></div>
+    </div>`).join('');
+  $('footnote').textContent = FOOT;
+}
+
+function renderAt(t) {
+  t = clamp(t, 0, DURATION - 1e-6);
+  const sc = scenes.find((s) => t >= s.start && t < s.end) || scenes[scenes.length - 1];
+  if (sc !== current) setScene(sc);
+  if (sc.layout === 'card') {
+    $('card').innerHTML = sc.card(sc, t);
+  } else {
+    for (const win of document.querySelectorAll('.win')) {
+      const p = sc.panes[win.dataset.pane];
+      const lines = win.querySelector('.lines');
+      const body = win.querySelector('.body');
+      lines.innerHTML = renderPaneLines(p, t);
+      let room = body.clientHeight - 32;
+      const watches = body.querySelector('.watches');
+      if (watches) watches.remove();
+      if (p.watches) {
+        const html = renderWatches(p, t);
+        if (html) {
+          body.insertAdjacentHTML('beforeend', html);
+          room = Math.min(room, body.querySelector('.watches').offsetTop - 40);
+        }
+      }
+      // scroll like a terminal: drop whole rows from the top until it fits
+      while (lines.offsetHeight > room && lines.children.length > 1) lines.firstElementChild.remove();
+      const sp = p.speeds.find((x) => t >= x.from && t <= x.to);
+      const badge = win.querySelector('.speed');
+      badge.classList.toggle('hidden', !sp);
+      if (sp) {
+        const slow = sp.stretch > 1;
+        const frac = { 2: '½', 3: '⅓', 4: '¼' }[sp.stretch] || `1/${sp.stretch}`;
+        badge.classList.toggle('slow', slow);
+        badge.textContent = slow ? `slow motion · ${frac} speed` : `${Math.round(1 / sp.stretch)}× speed`;
+      }
+    }
+    const body = typeof sc.body === 'function' ? sc.body(sc, t) : sc.body;
+    const num = String(sc.chapter + 1).padStart(2, '0');
+    $('cap').innerHTML = `<div class="num">${num} / ${String(CHAPTERS.length).padStart(2, '0')}</div><h2>${sc.title}</h2><p>${body}</p>`;
+    $('widget').innerHTML = sc.widget ? sc.widget(sc, t) : '';
+  }
+  // dip to background between scenes
+  let f = 0;
+  for (const s of scenes) {
+    if (s.start > 0) f = Math.max(f, 1 - Math.abs(t - s.start) / 0.28);
+  }
+  $('fade').style.opacity = String(clamp(f, 0, 1) * 0.92);
+}
+window.renderAt = renderAt;
+
+// Real-time playback when opened directly (for previewing).
+if (!window.FRAME_STEPPING) {
+  const q = new URLSearchParams(location.search);
+  if (q.has('t')) renderAt(Number(q.get('t')));
+  else {
+    const t0 = performance.now();
+    const tick = () => { const t = (performance.now() - t0) / 1000; renderAt(t % DURATION); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }
+}
+</script>
+</body>
+</html>
