@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kudzu": {
+      "command": "kudzu",
+      "args": ["mcp", "--read-only"],
+      "env": {
+        "KUDZU_REMOTE": "${KUDZU_REMOTE:-unix:///tmp/kudzu.sock}"
+      }
+    }
+  }
+}

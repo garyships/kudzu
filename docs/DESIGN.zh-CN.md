@@ -1,0 +1,186 @@
+# Kudzu 设计说明
+
+这份文档说明 Kudzu 怎样实现文章里描述的各个机制，以及文章没讲、实现时自行选择的地方。代码位置都相对于仓库根目录。
+
+## 1. 数据模型
+
+### changeset（`internal/object/changeset.go`）
+
+工作的基本单位是 changeset，也就是一条写前日志（WAL）记录。它和 git commit 最大的区别是**不指向 root tree**，而是列出相对**第一个父节点**改了哪些文件：
+
+```json
+{
+  "parents": ["<id>"],
+  "author": "Alice <a@example.com>", "time": 1760000000, "tz": 480,
+  "message": "api: tweak handler",
+  "changes": [
+    {"path": "services/api/handler.go", "mode": 33188, "blob": "<sha256>"},
+    {"path": "services/api/old.go", "mode": 0}
+  ]
+}
+```
+
+`mode: 0` 表示删除。changeset ID 是规范 JSON 编码的 SHA-256。merge 也只列相对第一个父节点的改动，对应文章脚注里的说法：在 monorepo 的主干开发里，大家只关心主线上的历史和 blame。
+
+### 对象（`internal/object/object.go`、`tree.go`）
+
+- **blob**：文件内容
+- **tree**：目录快照，格式和 git 类似（`<八进制 mode> <name>\0<32 字节 id>`）。相同的目录在任何 changeset 里哈希都相同，所以客户端从不重复请求已经有的子树
+- **unode**：带历史的节点（借用 Meta/Mononoke 的说法）。它记录产生它的 changeset（linknode），以及同一路径上的上一个版本
+
+每个对象的 ID 是 `sha256("<kind> <len>\0" + content)`。**存储形式** `[kind][codec][payload]` 在每一层都一样：服务端磁盘、区域缓存内存、节点 daemon 磁盘，以及网络上传输的都是同一份字节。这对应文章里的说法：cache 直接从内存流式发送 daemon 要的磁盘格式，不需要现算缺什么，也不做 delta 压缩。只有 blob 会压缩，tree 和 unode 主要是哈希，压不下去。
+
+客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，恶意服务端没法让客户端写到工作区外面。
+
+## 2. 存储（`internal/store`）
+
+文章里有两种存储角色，这里都是接口：
+
+| 角色 | 接口 | 现有实现 | 生产环境可换成 |
+|---|---|---|---|
+| 权威元数据（changeset 日志、ref、派生数据） | `store.Meta` | SQLite，WAL 模式（`meta.go`） | Spanner、Postgres、CockroachDB |
+| 不可变对象 | `store.Objects` | 本地目录 `FS`、内存 LRU `Mem`、两者叠加 `Cached` | S3、GCS |
+
+SQLite 的表结构：
+
+- `changesets(seq, id, data)`：追加写的日志，`seq` 就是日志位置，`/api/wal` 可以按位置订阅
+- `refs(name, target, version)`：**移动 ref 就是对这一行做 compare-and-swap**，和创建 changeset 完全分开
+- `derived(kind, key, value)`：派生数据缓存，任何服务端都能计算后写回
+- `mapping(ns, key, value)`：git sha 到 changeset 的映射，用来做增量导入
+
+创建 changeset 只需要一次 `INSERT OR IGNORE`：不加锁、不需要跨服务器协调、不碰 ref。
+
+## 3. 派生数据引擎（`internal/repo/derive.go`）
+
+changeset 只记录"改了什么"，回答不了"这一行最后是谁改的"。文章的做法是：凡是不属于 changeset 本身的东西都算派生数据，并且**统一用一个机制计算**。每种派生数据都递归定义：某个 key 的值，由它各个父节点的值算出来。
+
+```go
+type Deriver struct {
+    Name    string
+    Parents func(ctx, r, key) ([]object.ID, error)
+    Compute func(ctx, r, key, parentValues [][]byte) ([]byte, error)
+}
+```
+
+`Repo.Derive` 负责其余所有事情：查缓存、按需从最老的缺失祖先开始往前算（迭代实现，再长的历史也不会栈溢出）、把结果写回 `derived` 表、合并同一个 key 的并发计算。
+
+现有四种：
+
+| 名字 | key | 值 | 用途 | 默认 |
+|---|---|---|---|---|
+| `tree` | changeset | root tree ID | checkout、diff、读文件 | 创建时同步计算（也起校验作用） |
+| `gen` | changeset | 代数 + 第一父节点跳表（`skip[k]` 是往上 2^k 步的祖先） | O(log n) 的祖先判断和 `main~N` | 立即计算 |
+| `unode` | changeset | root unode ID | 文件或目录的路径历史 | 立即计算（`--lazy unode` 可改成按需） |
+| `blame` | 文件 unode | 每行归属的 changeset | blame | 按需（第一次查询时计算） |
+
+文章说到的三个好处在这里都成立：
+1. 加一个新索引只需要再写一个 `Deriver`
+2. 每种类型可以选择立即算还是按需算（`Repo.Eager`）
+3. 客户端看不到这些结构，内部格式可以随时改
+
+**路径历史为什么快**：每次 changeset 改到某个文件或目录，都会给它生成一个新 unode，并指向同一路径上的上一个 unode。`log <path>` 只需要顺着这条链走，每条结果读一个节点，和中间夹着多少无关历史没有关系。
+
+**blame**：用文件 unode 的上一个版本当父节点。没变的行沿用上一版的归属，新增或修改的行归到当前 linknode。差异计算用 Myers diff（`internal/textdiff`）。
+
+## 4. 服务端写操作（`internal/repo/write.go`）
+
+- **Create**：校验路径和 blob，去掉无效改动，把改动应用到父节点的 tree 上（只重写改动路径上的目录，成本是"改动文件数 × 目录深度"），追加到日志，再计算需要立即计算的派生数据
+- **三方合并 `threeWay`**：对每个改动的路径，比较 base 和 ours。上游没动过的直接应用；两边都改了的文本文件做行级三方合并；其余情况算冲突，返回冲突路径
+- **Rebase**：在服务端把 `merge-base(head, onto)..head` 这一串 changeset 逐个移到 `onto` 上
+- **Merge**：生成一个双父节点的 changeset，改动相对 ours 列出
+- **Land**：没有全局锁的乐观循环：
+
+```
+loop:
+    tip = 读 ref
+    如果 head 已经在 tip 里 → 完成
+    next = head 是 tip 的后代 ? head : rebase(head, tip)
+    CAS(ref, tip, next) 成功 → 完成；失败说明别人先 land 了 → 重来
+```
+
+这对应文章里"merge queue 的全局锁在 agent 规模下不适用"的结论。并发的改动只要不冲突，就会一个接一个自动 rebase 进去（测试里 40 个并发 land 全部成功，主线保持线性）。冲突交给调用方（通常是 agent）处理。文章的思路是把测试放到合并之后、部署之前来做，Kudzu 不涉及测试这一步。
+
+## 5. 祖先查询（`internal/repo/ancestry.go`）
+
+- `IsAncestor(a, b)`：先沿 b 的第一父链用跳表做二进制提升，跳到代数不小于 a 的最老节点，看是不是 a。主干开发下 O(log n)。不是的话，再做一次按代数剪枝的完整搜索（处理经由 merge 第二父节点的情况）
+- `MergeBase(a, b)`：两边同时着色，按代数从高到低出队，第一个同时带两种颜色的节点就是一个最优公共祖先
+- `NthAncestor`：按 n 的二进制位从低到高跳。深度为 D 的节点拥有所有 2^k ≤ D 的跳表层，所以只要 n ≤ D，需要的那一层一定存在
+
+## 6. 对象协议（`internal/proto`）
+
+```
+GET  /objects/{id}      单个对象（存储形式），Cache-Control: immutable
+POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
+                        响应：逐个对象的帧流  id(32) | 状态(1) | 长度(4) | 数据
+```
+
+**协商只看"想要什么"**：客户端从不告诉服务端自己有什么，只按 ID 要具体的对象。从 root tree 开始，每一层把本地缺的 tree 一次性批量要齐，展开后再要下一层；tree 都拿到之后再批量要 blob。好处：
+
+- 每个请求都是针对一个永不改变的对象，任何缓存都能回答
+- 没有一次性的几 GB packfile，按对象流式返回；连接断了只重新要还没收到的那些（`Remote.fetchChunk`）
+- sparse checkout 不需要协议特别支持：客户端不要不需要的子树就行
+
+写入方向：`POST /objects/missing` 先问服务端缺哪些 blob，`POST /objects/upload` 只传缺的，服务端逐个校验哈希。
+
+## 7. 缓存层（`internal/tier`）
+
+`kudzu cache`（内存）和 `kudzu daemon`（磁盘，unix socket）是同一份代码，只是本地存储不同：
+
+- 命中直接返回；未命中的批量向上游要
+- **合并并发未命中**：同一对象如果已经有拉取在进行，新请求直接等它的结果（测试：50 个并发冷请求 → 上游 1 次请求）。拉取在后台独立 context 里进行，发起它的请求断开也不影响其他等待者
+- **限制上游并发数**（`--upstream-concurrency`），实现文章说的故障域隔离：一个区域缓存出问题，不会把上游服务端一起拖垮
+- 非对象请求（`/api/*`、上传）原样转发给上游，所以对客户端来说三层没有区别
+- daemon 可以用 `--seed` 从快照启动（`kudzu snapshot` 生成，内容是某个版本全部对象的帧流），之后只拉增量。对应文章里"daemon 从定期刷新的快照启动"
+- `/stats` 返回命中率、合并数、上游请求数
+
+## 8. 客户端（`internal/client`）
+
+- **sparse 规则**（`internal/sparse`，和 git 的 cone mode 一样）：选中的目录下所有内容，加上它各级祖先目录里直接放着的文件
+- **clone**：按层批量拉 tree，最后批量拉 blob。blob 从拉取流里出来后，在 worker 池里校验哈希并直接写成工作区文件，不会先落盘再读回来
+- **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰
+- **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小
+- **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希
+- **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
+
+## 9. git 导入（`internal/gitimport`）
+
+文章说他们的迁移管道是 git 到 Scion 的单向导入，这里也一样：
+
+- `git rev-list --topo-order --reverse --parents` 拿到提交顺序
+- 只开一个 `git cat-file --batch` 进程读提交、tree 和 blob
+- 自己对比两棵 git tree（哈希相同的子树跳过），得到相对第一父节点的改动
+- 新 blob 在 worker 池里并行做哈希、压缩、写入
+- `mapping` 表记录 git sha 到 changeset 的对应关系，重复执行只导入新提交，所以可以用来持续镜像一个 git 仓库
+- shallow clone 的边界提交会被当作历史的起点
+
+## 10. 哪些是文章明说的，哪些是 Kudzu 自己的选择
+
+文章明说的：changeset 是 WAL 记录、只存相对第一父节点的改动、内容寻址的 blob；ref 是 Spanner 单行 CAS；派生数据递归定义、统一机制、可选立即或按需；三层缓存响应相同 RPC 且强制分层；按"想要什么"协商、从 root tree 递归；没有 packfile；服务端做 merge 和 rebase；sparse 和虚拟化 checkout；先合并、后测试。
+
+文章没说、Kudzu 自己选的（可能和 Scion 不同）：
+- 具体的序列化格式、哈希算法（SHA-256）和压缩方式（zlib）
+- 用 unode 实现路径历史（Mononoke 的做法；文章只说有专门的结构）
+- 跳表的具体定义（第一父链上的二进制提升）
+- 三方合并的规则：相邻的修改也算冲突，比较保守
+- 传输层用 HTTP/1.1 加自定义帧格式，没用 gRPC，这样不需要代码生成，用 curl 也能调
+- 用 SQLite 代替 Spanner，所以目前只能有一个权威服务端进程（缓存层可以有任意多个）
+
+## API 一览
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/resolve?rev=` | 版本号 → changeset + root tree。版本号可以是 ref、ID 前缀，后面可以加 `~N` |
+| GET | `/api/changesets/{rev}` | changeset 详情 |
+| POST | `/api/changesets` | 创建 changeset；可选 `"land": "main"`，同一次调用里直接 land |
+| GET | `/api/log?rev=&path=&limit=` | 第一父链历史，或某个路径的历史 |
+| GET | `/api/blame?rev=&path=` | 每行的 changeset、作者、时间 |
+| GET | `/api/diff?from=&to=&path=&merge_base=1&patch=1` | 文件列表，可附带 unified diff |
+| GET | `/api/cat?rev=&path=` / `/api/ls?rev=&path=` | 读文件 / 列目录 |
+| GET | `/api/ancestry?a=&b=` | merge base、谁是谁的祖先 |
+| GET / POST | `/api/refs`、`/api/refs/{name}` | 列出 ref / CAS 移动 ref |
+| POST | `/api/rebase`、`/api/merge`、`/api/land` | 服务端 rebase / merge / 无锁 land |
+| GET | `/api/wal?since=` | 按日志位置订阅新 changeset（例如给代码搜索建索引） |
+| GET | `/api/snapshot?rev=&sparse=` | 某个版本的全部对象（daemon 启动用） |
+| GET / POST | `/objects/{id}`、`/objects/fetch` | 对象协议，三层都支持 |
+| POST | `/objects/missing`、`/objects/upload` | 上传前询问缺哪些对象 / 上传 |
+| GET | `/stats`、`/healthz` | 统计 / 健康检查 |

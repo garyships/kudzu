@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kudzu — version control for agent-scale monorepos</title>
+<meta name="description" content="Kudzu is an open-source version control system for agent-scale monorepos. No full clones: clients fetch exactly the objects they want through tiered caches. History, blame, diffs and merges run on the server, and changes land lock-free.">
+<meta name="theme-color" content="#07100b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f7faf6" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<link rel="canonical" href="https://garyships.github.io/kudzu/">
+<link rel="icon" href="assets/site/favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Kudzu">
+<meta property="og:url" content="https://garyships.github.io/kudzu/">
+<meta property="og:title" content="Kudzu — version control that keeps up with your agents">
+<meta property="og:description" content="Open-source VCS for agent-scale monorepos: no full clones, want-based fetch through tiered caches, history and merges on the server, lock-free landing.">
+<meta property="og:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Kudzu: version control for agent-scale monorepos. Server, regional cache, node daemon and agents connected by a growing vine.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Kudzu — version control that keeps up with your agents">
+<meta name="twitter:description" content="Open-source VCS for agent-scale monorepos: no full clones, want-based fetch through tiered caches, history and merges on the server, lock-free landing.">
+<meta name="twitter:image" content="https://garyships.github.io/kudzu/assets/site/og.png">
+<meta name="twitter:image:alt" content="Kudzu: version control for agent-scale monorepos.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@1&display=swap">
+<link rel="stylesheet" href="assets/site/style.css">
+<script>try{var t=localStorage.getItem("kudzu-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}document.documentElement.classList.add("js")</script>
+<script src="assets/site/site.js" defer></script>
+<script src="assets/site/flow.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<!-- Shared SVG symbols -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-leaf" viewBox="-24 -50 48 54">
+      <path d="M0 4 L0 -14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+      <path transform="translate(0 -13)" d="M0 0 C9 -6 13 -17 0 -32 C-13 -17 -9 -6 0 0Z" fill="currentColor"/>
+      <path transform="translate(0 -11) rotate(-66) scale(.8)" d="M0 0 C9 -6 13 -17 0 -32 C-13 -17 -9 -6 0 0Z" fill="currentColor"/>
+      <path transform="translate(0 -11) rotate(66) scale(.8)" d="M0 0 C9 -6 13 -17 0 -32 C-13 -17 -9 -6 0 0Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path fill="currentColor" d="M4.5 2.8v10.4c0 .6.66.97 1.17.65l8.1-5.2a.77.77 0 000-1.3l-8.1-5.2A.77.77 0 004.5 2.8z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M5.5 5.5h7v8h-7zM3.5 10.5v-8h7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 8.5l3.2 3L13 4.5"/></symbol>
+    <symbol id="i-replay" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M2.8 8a5.2 5.2 0 1 0 1.6-3.75M2.6 2.2v2.6h2.6"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 16 16"><path fill="currentColor" d="M4 3h3v10H4zM9 3h3v10H9z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M4.5 11.5l7-7M6 4.5h5.5V10"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.3M8 13.2v1.3M1.5 8h1.3M13.2 8h1.3M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9"/></g></symbol>
+    <symbol id="i-moon" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></symbol>
+  </defs>
+</svg>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="Kudzu home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#i-leaf"/></svg>
+      <span>kudzu</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#vs-git">vs git</a>
+      <a href="#demo">Demo</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#quickstart">Quick start</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch color theme">
+        <svg class="i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+        <svg class="i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+      </button>
+      <a class="btn btn-sm btn-secondary" href="https://github.com/garyships/kudzu">
+        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg><span>GitHub</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============ HERO ============ -->
+<section class="hero" id="top" aria-labelledby="hero-title">
+  <div class="hero-bg" aria-hidden="true"></div>
+  <svg class="vine vine-left" viewBox="0 0 420 760" aria-hidden="true" focusable="false">
+    <path class="vine-stem" d="M-20 770 C 40 720, 70 650, 70 590 S 30 480, 95 420 S 220 360, 190 270 S 90 160, 150 90 S 270 30, 300 -20"/>
+    <path class="vine-stem thin" d="M70 590 C 120 600, 170 640, 230 625 S 300 560, 280 530"/>
+    <path class="vine-stem thin" d="M190 270 C 240 260, 290 280, 320 250 S 330 200, 300 195"/>
+  </svg>
+  <svg class="vine vine-right" viewBox="0 0 420 640" aria-hidden="true" focusable="false">
+    <path class="vine-stem" d="M440 -20 C 400 40, 410 100, 360 150 S 230 220, 270 300 S 390 400, 330 470 S 240 560, 260 660"/>
+    <path class="vine-stem thin" d="M360 150 C 320 120, 270 130, 240 100 S 230 50, 255 45"/>
+    <path class="vine-stem thin" d="M330 470 C 290 440, 240 450, 215 420"/>
+  </svg>
+
+  <div class="container hero-inner">
+    <a class="pill" href="https://github.com/garyships/kudzu">
+      <span class="pill-dot" aria-hidden="true"></span>
+      Open source · written in Go · MIT licensed
+      <svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg>
+    </a>
+    <h1 id="hero-title">
+      Your agents write code like <em>kudzu</em>&nbsp;grows.
+      <span class="h1-sub">Your version control should keep&nbsp;up.</span>
+    </h1>
+    <p class="hero-lead">
+      Kudzu is an open-source version control system for agent-scale monorepos.
+      Clients never clone the whole repo: they ask for exactly the objects they want through tiered caches.
+      History, blame, diffs and merges run on the server, and changes land without a lock.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/garyships/kudzu">
+        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg>View on GitHub
+      </a>
+      <a class="btn btn-secondary" href="#quickstart">Quick start</a>
+      <a class="btn btn-ghost" href="#demo">
+        <svg class="i" aria-hidden="true"><use href="#i-play"/></svg>Watch demo
+      </a>
+    </div>
+    <p class="hero-note">
+      An independent take on the design Anthropic described for its internal system, Scion.
+      <a href="https://www.anthropic.com/engineering/redesigning-source-control">Read the article</a>.
+      Not affiliated with Anthropic.
+    </p>
+  </div>
+
+  <div class="container">
+    <figure class="terminal" id="hero-terminal" aria-label="Example terminal session">
+      <div class="terminal-bar" aria-hidden="true">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="terminal-title">agent-7 — zsh</span>
+        <span></span>
+      </div>
+      <pre class="terminal-body"><code><span class="t-line t-com"># Fetch just the slice of the monorepo this task touches. No history, no packfile.</span>
+<span class="t-line t-cmd"><span class="t-ps">$</span> kudzu clone --sparse services/api $KUDZU_REMOTE wc &amp;&amp; cd wc</span>
+<span class="t-line t-com"># History and blame are answered by the server, from derived data.</span>
+<span class="t-line t-cmd"><span class="t-ps">$</span> kudzu log services/api/handler.go</span>
+<span class="t-line t-cmd"><span class="t-ps">$</span> kudzu blame services/api/handler.go</span>
+<span class="t-line t-com"># The server creates the changeset, rebases it onto main and lands it. No push, no queue.</span>
+<span class="t-line t-cmd"><span class="t-ps">$</span> kudzu commit -m "api: retry on 503" --land main</span>
+<span class="t-line t-out">created 3f9c2a71b0de (1 files)</span>
+<span class="t-line t-out t-ok">landed 8a41d07e5c22 on main (rebased, 2 attempt(s))</span><span class="t-caret" aria-hidden="true"></span></code></pre>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ PROBLEM ============ -->
+<section class="section" id="problem" aria-labelledby="problem-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>01</span> The problem</p>
+      <h2 id="problem-title">Git was built for people who go offline. Agents never&nbsp;do.</h2>
+      <p class="lead">
+        Every git clone is a full replica: all of history, packed and maintained on every machine.
+        That's perfect for a laptop on a plane. It turns into a bottleneck when most clients are
+        always-online agents and CI jobs, all landing into one monorepo.
+      </p>
+    </header>
+
+    <div class="scale" data-reveal>
+      <div class="scale-head">
+        <h3>What agent scale looked like at Anthropic</h3>
+        <p class="source">Figures from Anthropic's article <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a> (Oct&nbsp;2026), about their internal system Scion. They are not Kudzu measurements.</p>
+      </div>
+      <div class="scale-grid">
+        <div class="tile tile-feature">
+          <p class="tile-label">Merges per day</p>
+          <div class="merge-bars" role="img" aria-label="Merges per day grew from about 2,500 in May 2026 to more than 30,000 in September 2026.">
+            <div class="mbar" style="--v:.0833">
+              <span class="mbar-val">~2,500</span>
+              <span class="mbar-fill"></span>
+              <span class="mbar-lab">May 2026</span>
+            </div>
+            <div class="mbar mbar-accent" style="--v:1">
+              <span class="mbar-val">30,000+</span>
+              <span class="mbar-fill"></span>
+              <span class="mbar-lab">Sept 2026</span>
+            </div>
+          </div>
+          <p class="tile-foot"><b>~12×</b> in four months</p>
+        </div>
+        <div class="tile"><p class="tile-value">~100&nbsp;GB</p><p class="tile-label">of main-branch history</p></div>
+        <div class="tile"><p class="tile-value">25+&nbsp;GB</p><p class="tile-label">compressed working copy</p></div>
+        <div class="tile"><p class="tile-value">~25M</p><p class="tile-label">CI checkouts per day</p></div>
+        <div class="tile"><p class="tile-value">Hundreds</p><p class="tile-label">of git mirrors at peak</p></div>
+      </div>
+      <div class="after">
+        <p class="after-label">After moving to Scion, the article reports</p>
+        <ul class="after-list">
+          <li><b>200×</b><span>smaller infrastructure footprint</span></li>
+          <li><b>Seconds</b><span>per checkout, instead of minutes</span></li>
+          <li><b>&gt;99%</b><span>cache hit rate at each tier</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="principles">
+      <h3 class="principles-title">Kudzu flips git's defaults</h3>
+      <div class="principles-grid">
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">1</span>
+          <h4>Always online</h4>
+          <p>No full clone. The client asks the server for exactly the trees and blobs it wants, when it wants them.</p>
+        </article>
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">2</span>
+          <h4>Thin client, smart server</h4>
+          <p>History, blame, diff, merge, rebase and commit run on the server. Clients cache objects, lay out files and notice edits.</p>
+        </article>
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">3</span>
+          <h4>A real source-control API</h4>
+          <p><code>/api/log</code>, <code>/api/blame</code>, <code>/api/diff</code>, <code>/api/cat</code>… CI and tools get answers without a checkout.</p>
+        </article>
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">4</span>
+          <h4>Scales out by caching</h4>
+          <p>Objects are immutable and content-addressed, so any tier can answer. No packfiles, no repo maintenance.</p>
+        </article>
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">5</span>
+          <h4>Cheap, lock-free commits</h4>
+          <p>A changeset is one append to a log. The ref moves separately, by a single-row compare-and-swap.</p>
+        </article>
+        <article class="pcard" data-reveal>
+          <span class="pcard-n">6</span>
+          <h4>Sparse by default</h4>
+          <p>The protocol is built around sparse checkout, and many reads and writes need no working copy at all.</p>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FLOW (centrepiece) ============ -->
+<section class="section section-flow" id="how" aria-labelledby="how-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>02</span> How it flows</p>
+      <h2 id="how-title">Ask for what you want. Every tier answers the same&nbsp;question.</h2>
+      <p class="lead">
+        Server, regional cache and node daemon all speak the same object RPC. Objects never change,
+        so any tier can answer, and a miss travels upstream once, no matter how many agents asked.
+      </p>
+    </header>
+
+    <div class="flow" id="flow">
+      <div class="flow-main">
+        <div class="flow-caption" id="flow-caption" aria-live="polite">
+          <span class="flow-caption-n">1</span>
+          <span class="flow-caption-t">Want the root tree</span>
+        </div>
+        <div class="flow-stage" id="flow-stage" role="img" aria-label="Diagram: a kudzu server feeds a regional cache, which feeds two node daemons, each serving three agents. Requests travel up only as far as the first tier that has the object; objects flow back down and are cached at each tier.">
+          <svg class="flow-wires" id="flow-wires" aria-hidden="true"></svg>
+
+          <div class="tier tier-server" data-node="server">
+            <div class="tier-head">
+              <span class="tier-name">kudzu server</span>
+              <span class="tier-tag">authoritative</span>
+            </div>
+            <p class="tier-sub">changeset log · refs · derived data — SQLite + object store</p>
+            <div class="tier-foot">
+              <div class="slots" data-slots="server"></div>
+              <span class="tier-stat">served <b data-stat="server-req">0</b></span>
+            </div>
+            <span class="badge" data-badge="server"></span>
+          </div>
+
+          <div class="tier tier-cache" data-node="cache">
+            <div class="tier-head">
+              <span class="tier-name">kudzu cache</span>
+              <span class="tier-tag">regional · memory</span>
+            </div>
+            <p class="tier-sub">coalesces misses · ≤32 upstream in flight</p>
+            <div class="tier-foot">
+              <div class="slots" data-slots="cache"></div>
+              <span class="tier-stat">hits <b data-stat="cache-hit">0</b> · up <b data-stat="cache-up">0</b></span>
+            </div>
+            <span class="badge" data-badge="cache"></span>
+          </div>
+
+          <div class="flow-nodes">
+            <div class="flow-node">
+              <div class="tier tier-daemon" data-node="dA">
+                <div class="tier-head">
+                  <span class="tier-name">kudzu daemon</span>
+                  <span class="tier-tag">node A · disk</span>
+                </div>
+                <div class="tier-foot">
+                  <div class="slots" data-slots="dA"></div>
+                  <span class="tier-stat">hits <b data-stat="dA-hit">0</b> · up <b data-stat="dA-up">0</b></span>
+                </div>
+                <span class="badge" data-badge="dA"></span>
+              </div>
+              <div class="agents">
+                <div class="agent" data-node="a1"><b>A1</b><span>agent</span></div>
+                <div class="agent" data-node="a2"><b>A2</b><span>agent</span></div>
+                <div class="agent" data-node="a3"><b>A3</b><span>CI</span></div>
+              </div>
+            </div>
+            <div class="flow-node">
+              <div class="tier tier-daemon" data-node="dB">
+                <div class="tier-head">
+                  <span class="tier-name">kudzu daemon</span>
+                  <span class="tier-tag">node B · disk</span>
+                </div>
+                <div class="tier-foot">
+                  <div class="slots" data-slots="dB"></div>
+                  <span class="tier-stat">hits <b data-stat="dB-hit">0</b> · up <b data-stat="dB-up">0</b></span>
+                </div>
+                <span class="badge" data-badge="dB"></span>
+              </div>
+              <div class="agents">
+                <div class="agent" data-node="b1"><b>B1</b><span>agent</span></div>
+                <div class="agent" data-node="b2"><b>B2</b><span>agent</span></div>
+                <div class="agent" data-node="b3"><b>B3</b><span>CI</span></div>
+              </div>
+            </div>
+          </div>
+          <svg class="flow-packets" id="flow-packets" aria-hidden="true"></svg>
+        </div>
+        <div class="flow-legend" aria-hidden="true">
+          <span><i class="lg lg-want"></i>want (request)</span>
+          <span><i class="lg lg-tree"></i>tree</span>
+          <span><i class="lg lg-blob"></i>blob</span>
+          <span><i class="lg lg-new"></i>new object</span>
+          <span><i class="lg lg-skip"></i>never requested</span>
+        </div>
+      </div>
+
+      <aside class="flow-side" aria-label="Walkthrough">
+        <div class="flow-controls">
+          <button class="btn btn-sm btn-secondary" id="flow-toggle" type="button" aria-pressed="false">
+            <svg class="i i-pause" aria-hidden="true"><use href="#i-pause"/></svg>
+            <svg class="i i-play" aria-hidden="true"><use href="#i-play"/></svg>
+            <span>Pause</span>
+          </button>
+          <button class="btn btn-sm btn-ghost" id="flow-replay" type="button">
+            <svg class="i" aria-hidden="true"><use href="#i-replay"/></svg><span>Replay</span>
+          </button>
+        </div>
+        <ol class="flow-steps" id="flow-steps">
+          <li data-step="0"><button type="button"><span class="fs-n">1</span><span class="fs-t">Want the root tree</span></button>
+            <p>Agent A1 runs <code>kudzu clone --sparse services/api</code>. It resolves <code>main</code> to a root tree ID, then asks for exactly that one object. Every tier misses, so the want travels all the way up.</p></li>
+          <li data-step="1"><button type="button"><span class="fs-n">2</span><span class="fs-t">Walk down one level</span></button>
+            <p>From the root, A1 wants <code>services/</code>, and simply never asks for <code>docs/</code> or <code>tools/</code>. Sparse checkout needs no special protocol: it's just not asking.</p></li>
+          <li data-step="2"><button type="button"><span class="fs-n">3</span><span class="fs-t">…and the next</span></button>
+            <p><code>services/api/</code> comes down; <code>services/web/</code> is never requested. Each tier keeps a copy of what passes through it.</p></li>
+          <li data-step="3"><button type="button"><span class="fs-n">4</span><span class="fs-t">Then the blobs, in one batch</span></button>
+            <p>With the trees in hand, A1 asks for every file it needs at once. Objects stream back one by one, so a dropped connection re-asks only for what's still missing. No multi-GB packfile.</p></li>
+          <li data-step="4"><button type="button"><span class="fs-n">5</span><span class="fs-t">Same machine: daemon hit</span></button>
+            <p>A2 on the same machine checks out the same path. Every object is a hit in node A's on-disk daemon. Nothing leaves the machine.</p></li>
+          <li data-step="5"><button type="button"><span class="fs-n">6</span><span class="fs-t">New machine, warm region</span></button>
+            <p>B1 starts on a fresh machine. Its daemon misses, but the regional cache already has everything, so the server never sees the request.</p></li>
+          <li data-step="6"><button type="button"><span class="fs-n">7</span><span class="fs-t">Concurrent misses coalesce</span></button>
+            <p>A change lands and all six agents want the new objects at the same moment. Each tier merges identical in-flight misses: six wants, one request to the server. In Kudzu's tests, 50 simultaneous cold requests reach upstream as 1.</p></li>
+        </ol>
+        <div class="wc" aria-label="Agent A1's working copy">
+          <div class="wc-head"><span>A1's working copy</span><code>--sparse services/api</code></div>
+          <ul class="wc-tree" id="wc-tree">
+            <li data-obj="t-root" style="--d:0"><span class="wc-name">/</span><span class="wc-st"></span></li>
+            <li data-obj="b-readme" style="--d:1"><span class="wc-name">README.md</span><span class="wc-st"></span></li>
+            <li data-obj="t-docs" style="--d:1"><span class="wc-name">docs/</span><span class="wc-st"></span></li>
+            <li data-obj="t-tools" style="--d:1"><span class="wc-name">tools/</span><span class="wc-st"></span></li>
+            <li data-obj="t-services" style="--d:1"><span class="wc-name">services/</span><span class="wc-st"></span></li>
+            <li data-obj="t-web" style="--d:2"><span class="wc-name">web/</span><span class="wc-st"></span></li>
+            <li data-obj="t-api" style="--d:2"><span class="wc-name">api/</span><span class="wc-st"></span></li>
+            <li data-obj="b-handler" style="--d:3"><span class="wc-name">handler.go</span><span class="wc-st"></span></li>
+            <li data-obj="b-routes" style="--d:3"><span class="wc-name">routes.go</span><span class="wc-st"></span></li>
+            <li data-obj="b-test" style="--d:3"><span class="wc-name">api_test.go</span><span class="wc-st"></span></li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============ GIT VS KUDZU ============ -->
+<section class="section" id="vs-git" aria-labelledby="vs-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>03</span> Git vs Kudzu</p>
+      <h2 id="vs-title">Same job. Opposite&nbsp;assumptions.</h2>
+      <p class="lead">Git puts a whole repository on every client and asks each one to do the work. Kudzu keeps the repository on the server and sends clients only what they ask for.</p>
+    </header>
+
+    <div class="vs-table-wrap" data-reveal>
+      <table class="vs-table">
+        <caption class="sr-only">Comparison of git and Kudzu</caption>
+        <thead>
+          <tr><th scope="col"><span class="sr-only">Task</span></th><th scope="col" class="col-git">git</th><th scope="col" class="col-kudzu"><svg class="i" aria-hidden="true"><use href="#i-leaf"/></svg>Kudzu</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Getting the code</th>
+            <td data-label="git"><code>git clone</code> copies a packfile with the full history to every client.</td>
+            <td data-label="Kudzu">The client asks for exactly the trees and blobs it wants, level by level. Sparse is just not asking.</td>
+          </tr>
+          <tr>
+            <th scope="row">History, blame, diff</th>
+            <td data-label="git">Computed on every client, from its own full copy.</td>
+            <td data-label="Kudzu">A server API backed by derived data. Works with no checkout at all.</td>
+          </tr>
+          <tr>
+            <th scope="row">Committing</th>
+            <td data-label="git">Commit locally, then push objects and history.</td>
+            <td data-label="Kudzu">Upload only the blobs the server is missing; the server creates the changeset. There is no push.</td>
+          </tr>
+          <tr>
+            <th scope="row">Landing</th>
+            <td data-label="git">A merge queue serializes landings behind a global lock.</td>
+            <td data-label="Kudzu">The server rebases onto the current tip and compare-and-swaps the ref. Lost the race? Retry.</td>
+          </tr>
+          <tr>
+            <th scope="row">Maintenance</th>
+            <td data-label="git"><code>repack</code> and <code>gc</code> on every mirror and replica.</td>
+            <td data-label="Kudzu">None. Immutable, content-addressed objects are served as-is by any cache.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="vs-demos">
+      <figure class="demo-card" id="clone-demo">
+        <figcaption class="demo-card-head">
+          <div>
+            <h3>What lands on the client</h3>
+            <p>Columns are files and directories; rows are versions, newest on top.</p>
+          </div>
+          <button class="btn btn-sm btn-ghost replay" type="button" data-replay="clone"><svg class="i" aria-hidden="true"><use href="#i-replay"/></svg><span>Replay</span></button>
+        </figcaption>
+        <div class="demo-panes">
+          <div class="pane pane-git">
+            <p class="pane-cmd"><code>git clone</code></p>
+            <div class="cgrid" data-grid="git" role="img" aria-label="git clone: every version of every file reaches the client"></div>
+            <div class="cbar"><span class="cbar-fill"></span></div>
+            <p class="pane-note">Every version of every file, as one packfile</p>
+          </div>
+          <div class="pane pane-kudzu">
+            <p class="pane-cmd"><code>kudzu clone --sparse services/api</code></p>
+            <div class="cgrid" data-grid="kudzu" role="img" aria-label="kudzu clone: only the wanted files at one revision reach the client"></div>
+            <div class="cbar"><span class="cbar-fill"></span></div>
+            <p class="pane-note">Only the objects you asked for, at one revision</p>
+          </div>
+        </div>
+        <p class="demo-foot">Git has shallow and partial clones too; Kudzu's protocol is built around wanting individual objects from the start.</p>
+      </figure>
+
+      <figure class="demo-card" id="land-demo">
+        <figcaption class="demo-card-head">
+          <div>
+            <h3>Two agents land at the same moment</h3>
+            <p>Both changes are based on <code>c3</code>, the current tip of <code>main</code>.</p>
+          </div>
+          <button class="btn btn-sm btn-ghost replay" type="button" data-replay="land"><svg class="i" aria-hidden="true"><use href="#i-replay"/></svg><span>Replay</span></button>
+        </figcaption>
+        <div class="demo-panes">
+          <div class="pane pane-git">
+            <p class="pane-cmd">Merge queue <span class="muted">· global lock</span></p>
+            <svg class="land-svg" viewBox="0 0 320 160" data-land="queue" role="img" aria-label="Merge queue: agent B waits for agent A to release the lock before it can land.">
+              <g class="lock" transform="translate(20 30)">
+                <rect x="-9" y="-2" width="18" height="14" rx="3"/>
+                <path class="lock-shackle" d="M-5 -2 V-6 a5 5 0 0 1 10 0 V-2"/>
+              </g>
+              <text class="land-label show lock-label" data-label="qlock" x="36" y="40">lock: free</text>
+              <line class="lg-main" x1="12" y1="132" x2="308" y2="132"/>
+              <g class="cs base"><circle cx="34" cy="132" r="10"/><text x="34" y="135.5">c1</text></g>
+              <g class="cs base"><circle cx="80" cy="132" r="10"/><text x="80" y="135.5">c2</text></g>
+              <g class="cs base"><circle cx="126" cy="132" r="10"/><text x="126" y="135.5">c3</text></g>
+              <g class="ref"><rect x="-21" y="-10" width="42" height="18" rx="9"/><text y="3">main</text></g>
+              <g class="cs mover" data-id="qa"><circle r="12"/><text y="4">a</text></g>
+              <g class="cs mover" data-id="qb"><circle r="12"/><text y="4">b</text></g>
+              <text class="land-label" data-label="qwait" x="290" y="20">waiting…</text>
+            </svg>
+            <ol class="land-log" data-log="queue"></ol>
+          </div>
+          <div class="pane pane-kudzu">
+            <p class="pane-cmd">kudzu land <span class="muted">· lock-free</span></p>
+            <svg class="land-svg" viewBox="0 0 320 160" data-land="kudzu" role="img" aria-label="Kudzu: both agents land at once; B's compare-and-swap loses the race, the server rebases B onto A and retries, and main stays linear.">
+              <text class="land-label show lock-label" x="12" y="40">no lock · CAS on main</text>
+              <line class="lg-main" x1="12" y1="132" x2="308" y2="132"/>
+              <g class="cs base"><circle cx="34" cy="132" r="10"/><text x="34" y="135.5">c1</text></g>
+              <g class="cs base"><circle cx="80" cy="132" r="10"/><text x="80" y="135.5">c2</text></g>
+              <g class="cs base"><circle cx="126" cy="132" r="10"/><text x="126" y="135.5">c3</text></g>
+              <g class="ref"><rect x="-21" y="-10" width="42" height="18" rx="9"/><text y="3">main</text></g>
+              <g class="cs mover" data-id="ka"><circle r="12"/><text y="4">a</text></g>
+              <g class="cs mover" data-id="kb"><circle r="12"/><text y="4">b</text></g>
+              <text class="land-label bad" data-label="kfail" x="196" y="62">✗ lost race</text>
+            </svg>
+            <ol class="land-log" data-log="kudzu"></ol>
+          </div>
+        </div>
+        <p class="demo-foot">Conflicts come back as HTTP 409 with the conflicting paths, for the agent to resolve. In Kudzu's tests, 40 concurrent lands all succeed and <code>main</code> stays linear.</p>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DEMO VIDEO ============ -->
+<section class="section" id="demo" aria-labelledby="demo-title">
+  <div class="container">
+    <header class="section-head section-head-center">
+      <p class="eyebrow"><span>04</span> Demo</p>
+      <h2 id="demo-title">See it run, end to&nbsp;end.</h2>
+      <p class="lead">Import a git repository, start the three tiers, check out a slice, and land changes from more than one agent.</p>
+    </header>
+    <div class="video-frame" id="video-frame">
+      <video id="demo-video" controls playsinline preload="metadata" poster="assets/demo-poster.png" src="assets/demo.mp4">
+        Your browser can't play this video. <a href="assets/demo.mp4">Download the demo</a>.
+      </video>
+      <div class="video-fallback" id="video-fallback" hidden>
+        <svg class="video-fallback-leaf" aria-hidden="true"><use href="#i-leaf"/></svg>
+        <p class="video-fallback-title">The demo video is on its way.</p>
+        <p>Meanwhile, the same walkthrough runs locally:</p>
+        <div class="code code-inline" data-copy>
+          <pre><code>scripts/demo.sh /path/to/a/git/repo [sparse/dir]</code></pre>
+        </div>
+      </div>
+    </div>
+    <p class="video-note">Prefer the terminal? <code>scripts/demo.sh</code> in the repo runs the walkthrough against any git repository you point it at.</p>
+  </div>
+</section>
+
+<!-- ============ UNDER THE HOOD ============ -->
+<section class="section" id="design" aria-labelledby="design-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>05</span> Under the hood</p>
+      <h2 id="design-title">A log of changesets. Everything else is&nbsp;derived.</h2>
+      <p class="lead">A changeset doesn't point at a full tree. It lists the files it changed relative to its first parent, and becomes one entry in an append-only log. Root trees, path history, ancestry and blame are computed from that log by one recursive engine.</p>
+    </header>
+
+    <div class="hood" id="hood">
+      <div class="hood-log">
+        <div class="hood-label">Append-only changeset log</div>
+        <ol class="log-list" id="log-list" aria-label="Changeset log">
+          <li><span class="log-seq">1041</span><span class="log-msg">web: fix nav focus ring</span><span class="log-files">2 files</span></li>
+          <li><span class="log-seq">1042</span><span class="log-msg">api: tweak handler</span><span class="log-files">2 files</span></li>
+          <li><span class="log-seq">1043</span><span class="log-msg">docs: add runbook</span><span class="log-files">1 file</span></li>
+        </ol>
+        <div class="code code-json">
+          <pre><code><span class="c-p">{</span>
+  <span class="c-k">"parents"</span>: [<span class="c-s">"9e03d1f2…"</span>],
+  <span class="c-k">"author"</span>: <span class="c-s">"Alice &lt;a@example.com&gt;"</span>,
+  <span class="c-k">"message"</span>: <span class="c-s">"api: tweak handler"</span>,
+  <span class="c-k">"changes"</span>: [
+    { <span class="c-k">"path"</span>: <span class="c-s">"services/api/handler.go"</span>,
+      <span class="c-k">"mode"</span>: <span class="c-n">33188</span>, <span class="c-k">"blob"</span>: <span class="c-s">"&lt;sha256&gt;"</span> },
+    { <span class="c-k">"path"</span>: <span class="c-s">"services/api/old.go"</span>, <span class="c-k">"mode"</span>: <span class="c-n">0</span> }
+  ]
+<span class="c-p">}</span></code></pre>
+        </div>
+        <p class="hood-note">Creating a changeset is a single insert: no lock, no ref update. <code>mode: 0</code> is a delete. Moving <code>main</code> is a separate compare-and-swap on one row.</p>
+      </div>
+
+      <div class="hood-engine" aria-hidden="true">
+        <div class="engine-wire"></div>
+        <div class="engine-core">
+          <span class="engine-title">derive engine</span>
+          <code>value(key) = compute(key, parents' values)</code>
+        </div>
+        <div class="engine-wire"></div>
+      </div>
+
+      <ul class="hood-derived" id="hood-derived" aria-label="Derived data types">
+        <li class="dd eager">
+          <div class="dd-top"><b>root tree</b><span class="dd-tag">eager</span></div>
+          <p>Checkout, diff, cat. Computed when the changeset is created, which also validates it.</p>
+        </li>
+        <li class="dd eager">
+          <div class="dd-top"><b>generation + skip list</b><span class="dd-tag">eager</span></div>
+          <p>Ancestry checks and <code>main~N</code> in O(log n) along the first-parent chain.</p>
+        </li>
+        <li class="dd eager">
+          <div class="dd-top"><b>unode</b><span class="dd-tag">eager · or lazy</span></div>
+          <p>Path history. <code>kudzu log &lt;path&gt;</code> follows one chain, however much unrelated history is in between.</p>
+        </li>
+        <li class="dd lazy">
+          <div class="dd-top"><b>blame</b><span class="dd-tag">lazy</span></div>
+          <p>Line ownership, computed on first query and cached for everyone after.</p>
+        </li>
+      </ul>
+    </div>
+    <p class="hood-foot">A new index is one more <code>Deriver</code>: a parents function and a compute function. The engine handles caching, computes missing ancestors oldest-first, and merges concurrent computations of the same key. Clients never see these structures, so they can change freely.</p>
+  </div>
+</section>
+
+<!-- ============ NUMBERS ============ -->
+<section class="section" id="numbers" aria-labelledby="numbers-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>06</span> Numbers</p>
+      <h2 id="numbers-title">Fast where it matters. Honest about the&nbsp;cost.</h2>
+      <p class="lead">The last 529 commits of a real-world repository (3,613 files), imported and served by Kudzu.</p>
+      <p class="caveat"><b>Illustrative only.</b> Measured in a single container with all three tiers on one machine. Not a benchmark.</p>
+    </header>
+
+    <div class="numbers">
+      <figure class="chart-card" data-reveal>
+        <figcaption>
+          <h3>Time to a working copy</h3>
+          <p>Seconds, lower is better</p>
+        </figcaption>
+        <div class="hbars" role="table" aria-label="Time to a working copy, in seconds">
+          <div class="hbar" role="row" style="--v:.145" tabindex="0">
+            <div class="hbar-label" role="rowheader"><code>kudzu clone --sparse src/</code><span>1,838 files · cold daemon</span></div>
+            <div class="hbar-track" role="cell"><span class="hbar-fill"></span><span class="hbar-val">0.30 s</span></div>
+          </div>
+          <div class="hbar" role="row" style="--v:.222" tabindex="0">
+            <div class="hbar-label" role="rowheader"><code>kudzu clone</code><span>full, 3,613 files · warm daemon</span></div>
+            <div class="hbar-track" role="cell"><span class="hbar-fill"></span><span class="hbar-val">0.46 s</span></div>
+          </div>
+          <div class="hbar" role="row" style="--v:.237" tabindex="0">
+            <div class="hbar-label" role="rowheader"><code>kudzu clone</code><span>full, second machine · warm regional cache</span></div>
+            <div class="hbar-track" role="cell"><span class="hbar-fill"></span><span class="hbar-val">0.49 s</span></div>
+          </div>
+          <div class="hbar hbar-git" role="row" style="--v:1" tabindex="0">
+            <div class="hbar-label" role="rowheader"><code>git clone --no-local</code><span>same repository</span></div>
+            <div class="hbar-track" role="cell"><span class="hbar-fill"></span><span class="hbar-val">2.07 s</span></div>
+          </div>
+        </div>
+      </figure>
+
+      <div class="num-tiles">
+        <div class="ntile" data-reveal>
+          <p class="ntile-value">≈5 s</p>
+          <p class="ntile-label">to import 529 commits (3,613 files) from git, derived data included</p>
+        </div>
+        <div class="ntile" data-reveal>
+          <p class="ntile-value">50 → 1</p>
+          <p class="ntile-label">simultaneous cold requests for the same objects reach upstream as one request <span class="src">(tests)</span></p>
+        </div>
+        <div class="ntile" data-reveal>
+          <p class="ntile-value">40 / 40</p>
+          <p class="ntile-label">concurrent lands succeed, with <code>main</code> kept linear <span class="src">(tests)</span></p>
+        </div>
+      </div>
+
+      <figure class="tradeoff" data-reveal>
+        <figcaption>
+          <h3>The trade-off: storage</h3>
+          <p>No packfiles and no delta compression. Each object is stored and shipped as-is, so any tier can cache it, resume it and serve it independently, with no repository maintenance. The price is about three times the server storage on this repository.</p>
+        </figcaption>
+        <div class="sbars" role="table" aria-label="Server storage in megabytes">
+          <div class="sbar" role="row" style="--v:1">
+            <span class="sbar-label" role="rowheader">Kudzu object store</span>
+            <span class="sbar-track" role="cell"><span class="sbar-fill"></span><span class="sbar-val">79 MB</span></span>
+          </div>
+          <div class="sbar sbar-git" role="row" style="--v:.329">
+            <span class="sbar-label" role="rowheader">git packfile</span>
+            <span class="sbar-track" role="cell"><span class="sbar-fill"></span><span class="sbar-val">26 MB</span></span>
+          </div>
+        </div>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ QUICK START ============ -->
+<section class="section" id="quickstart" aria-labelledby="qs-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>07</span> Quick start</p>
+      <h2 id="qs-title">Mirror a git repo and try it&nbsp;locally.</h2>
+      <p class="lead">You need Go 1.24+, and git for the import. The import is incremental, so re-running it mirrors new commits.</p>
+    </header>
+
+    <ol class="qs">
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">1</span><h3>Install</h3><p>One binary runs the server, the caches and the client.</p></div>
+        <div class="code" data-copy><pre><code>go install github.com/garyships/kudzu/cmd/kudzu@latest</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">2</span><h3>Import git history</h3><p>Every commit becomes a changeset, with derived data computed as it goes.</p></div>
+        <div class="code" data-copy><pre><code>kudzu import --store ./data --git /path/to/repo --as main</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">3</span><h3>Start the three tiers</h3><p>Authoritative server, regional cache, and a per-machine daemon on a unix socket.</p></div>
+        <div class="code" data-copy><pre><code>kudzu server --store ./data --listen 127.0.0.1:7070 &amp;
+kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &amp;
+kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &amp;
+export KUDZU_REMOTE=unix:///tmp/kudzu.sock</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">4</span><h3>Check out a slice, change it, land it</h3><p><code>commit --land</code> creates the changeset on the server and lands it in the same call. <code>-A</code> also picks up new files.</p></div>
+        <div class="code" data-copy><pre><code>kudzu clone --sparse services/api $KUDZU_REMOTE wc
+cd wc  # edit files…
+kudzu status
+kudzu commit -m "api: tweak handler" --land main</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">5</span><h3>Ask the server, no checkout needed</h3><p>History, path history, blame and diffs come straight from the API.</p></div>
+        <div class="code" data-copy><pre><code>kudzu log -n 5 --oneline
+kudzu log services/api/handler.go
+kudzu blame services/api/handler.go
+kudzu diff --from main~3 --to main --stat</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">6</span><h3>Commit without a checkout</h3><p>Write files straight through the API and land them in one call.</p></div>
+        <div class="code" data-copy><pre><code>kudzu write -r main -m "bump version" --land main VERSION=@./VERSION</code></pre></div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ AGENTS ============ -->
+<section class="section section-agents" id="agents" aria-labelledby="agents-title">
+  <div class="container">
+    <div class="agents-grid">
+      <header class="section-head">
+        <p class="eyebrow"><span>08</span> Built for AI agents</p>
+        <h2 id="agents-title">Version control your agents can just&nbsp;call.</h2>
+        <p class="lead"><code>kudzu mcp</code> runs a Model Context Protocol server over stdio. Agents can query history, blame and diffs, and write and land changes, without a checkout. Add <code>--read-only</code> to let an agent look but not land.</p>
+        <p class="agents-links">More in <a href="https://github.com/garyships/kudzu/blob/main/docs/AI.md">Kudzu for AI agents</a>, the <a href="https://github.com/garyships/kudzu/blob/main/skills/kudzu/SKILL.md">Agent Skill</a>, and <a href="llms.txt"><code>llms.txt</code></a>.</p>
+      </header>
+      <div class="agents-code">
+        <div class="tabs" role="tablist" aria-label="MCP setup">
+          <button role="tab" id="tab-claude" aria-controls="panel-claude" aria-selected="true" type="button">Claude Code</button>
+          <button role="tab" id="tab-json" aria-controls="panel-json" aria-selected="false" tabindex="-1" type="button">Other MCP clients</button>
+        </div>
+        <div class="tab-panel" role="tabpanel" id="panel-claude" aria-labelledby="tab-claude">
+          <div class="code" data-copy><pre><code>claude mcp add kudzu \
+  -e KUDZU_REMOTE=unix:///tmp/kudzu.sock \
+  -- kudzu mcp</code></pre></div>
+        </div>
+        <div class="tab-panel" role="tabpanel" id="panel-json" aria-labelledby="tab-json" hidden>
+          <div class="code" data-copy><pre><code>{
+  "mcpServers": {
+    "kudzu": {
+      "command": "kudzu",
+      "args": ["mcp"],
+      "env": { "KUDZU_REMOTE": "unix:///tmp/kudzu.sock" }
+    }
+  }
+}</code></pre></div>
+        </div>
+        <ul class="agent-points">
+          <li><b>Ask, don't clone.</b> History, blame and diffs are answered by the server from derived data.</li>
+          <li><b>Write and land in one step.</b> Changes go straight to the server, which rebases and lands them lock-free.</li>
+          <li><b>Conflicts are data.</b> A conflicting land returns the conflicting paths, so the agent can fix them and retry.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ROADMAP ============ -->
+<section class="section section-roadmap" id="roadmap" aria-labelledby="roadmap-title">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow"><span>09</span> Roadmap</p>
+      <h2 id="roadmap-title">Early, and honest about&nbsp;it.</h2>
+      <p class="lead">Kudzu is a working prototype with tests end to end. These pieces are not built yet.</p>
+    </header>
+    <ul class="roadmap">
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Virtualized checkout</h3><p>FUSE files that fetch on first read. The protocol supports it; the client doesn't yet.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Auth &amp; per-directory ACLs</h3><p>Today anyone who can reach the server can read and write.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Shared multi-server backend</h3><p>Metadata and objects already sit behind interfaces; running several servers needs Postgres/Spanner and S3/GCS implementations.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Object GC</h3><p>Changesets and objects orphaned by conflicts or lost races aren't collected yet.</p></li>
+      <li><span class="rm-dot" aria-hidden="true"></span><h3>Export back to git</h3><p>Import from git works, incrementally. Syncing back the other way doesn't yet.</p></li>
+    </ul>
+    <div class="final-cta">
+      <p>Kudzu is MIT licensed. Issues, ideas and pull requests are welcome.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/garyships/kudzu"><svg class="i" aria-hidden="true"><use href="#i-github"/></svg>Star on GitHub</a>
+        <a class="btn btn-secondary" href="https://github.com/garyships/kudzu/blob/main/docs/DESIGN.md">Read the design doc</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <a class="brand" href="#top" aria-label="Kudzu, back to top">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-leaf"/></svg><span>kudzu</span>
+      </a>
+      <p>Open-source version control for agent-scale monorepos.</p>
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="https://github.com/garyships/kudzu">GitHub</a>
+      <a href="https://github.com/garyships/kudzu/blob/main/LICENSE">MIT License</a>
+      <a href="https://github.com/garyships/kudzu/blob/main/docs/DESIGN.md">Design</a>
+      <a href="https://www.anthropic.com/engineering/redesigning-source-control">Anthropic's article</a>
+    </nav>
+    <p class="disclaimer">
+      Kudzu is an independent open-source project. It is not affiliated with or endorsed by Anthropic, and it is not Scion or Scion's code.
+      It implements design ideas Anthropic described publicly in
+      <a href="https://www.anthropic.com/engineering/redesigning-source-control">“Redesigning source control at Anthropic”</a>.
+      Figures attributed to that article are Anthropic's, not Kudzu's.
+    </p>
+  </div>
+</footer>
+</body>
+</html>

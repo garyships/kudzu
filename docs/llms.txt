@@ -1,0 +1,26 @@
+# Kudzu
+
+> Kudzu is an open-source version control system for monorepos where most clients are AI agents and CI jobs, written in Go. History, blame, diff, rebase and land run on the server, so agents can query history and even commit without a checkout. Clients fetch only the trees and blobs they ask for through tiers of caches, and landing is lock-free: the server rebases onto the current tip and moves the ref with compare-and-swap.
+
+Agents can use Kudzu three ways: the `kudzu mcp` MCP server (tools such as `kudzu_log`, `kudzu_blame`, `kudzu_diff`, `kudzu_cat` and `kudzu_write`), the `kudzu` CLI with `--json` output, or the HTTP API directly. Revisions are a ref (`main`), a changeset ID or hex prefix, plus `~N` for first-parent ancestors. The remote comes from `--remote`, else `$KUDZU_REMOTE`, else the working copy.
+
+## Docs
+
+- [Full reference](https://garyships.github.io/kudzu/llms-full.txt): CLI, `--json` output, MCP tools and the HTTP API, in one plain-text file
+- [Kudzu for AI agents](https://github.com/garyships/kudzu/blob/main/docs/AI.md): connect Claude Code or another MCP client, the tool list, the Agent Skill, `--json`
+- [Agent Skill](https://github.com/garyships/kudzu/blob/main/skills/kudzu/SKILL.md): how an agent with a shell should use Kudzu, including how to recover from land conflicts
+- [README](https://github.com/garyships/kudzu/blob/main/README.md): why Kudzu, architecture, quick start
+- [Design](https://github.com/garyships/kudzu/blob/main/docs/DESIGN.md): data model, derived data, object protocol, cache tiers, lock-free land
+
+## Code
+
+- [AGENTS.md](https://github.com/garyships/kudzu/blob/main/AGENTS.md): repository map, build and test commands, conventions for contributors
+- [HTTP API server](https://github.com/garyships/kudzu/blob/main/internal/server/server.go): every `/api` endpoint
+- [MCP server](https://github.com/garyships/kudzu/tree/main/internal/mcp): the `kudzu mcp` tools
+- [CLI](https://github.com/garyships/kudzu/tree/main/cmd/kudzu): command table in `main.go`
+
+## Optional
+
+- [Website](https://garyships.github.io/kudzu/): overview and demo video
+- [README in Chinese](https://github.com/garyships/kudzu/blob/main/README.zh-CN.md)
+- [Design in Chinese](https://github.com/garyships/kudzu/blob/main/docs/DESIGN.zh-CN.md)

@@ -1,0 +1,6 @@
+/kudzu
+/data/
+/kudzu-data/
+*.frames
+*.test
+*.out
