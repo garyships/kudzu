@@ -20,8 +20,17 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 
 ## Install and run
 
+Quickest: one process runs all three tiers on top of a git repository.
+
 ```bash
-go install github.com/garyships/kudzu/cmd/kudzu@latest      # Go 1.24+
+curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh   # or: go install github.com/garyships/kudzu/cmd/kudzu@latest (Go 1.24+)
+cd /path/to/any/git/repo && kudzu up      # imports history, serves until Ctrl-C
+export KUDZU_REMOTE=unix:///tmp/kudzu.sock   # in another shell
+```
+
+Each tier as its own process (how a real deployment runs):
+
+```bash
 kudzu import --store ./data --git /path/to/repo --as main     # git history -> changesets; re-run to add new commits
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
@@ -39,6 +48,8 @@ A single `kudzu server` is enough for experiments: point `KUDZU_REMOTE` at it di
 
 | Command | Flags (default) | Purpose |
 |---|---|---|
+| `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `-v` | Playground: import a git repository (incrementally) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
+| `kudzu version` | | Print the version (`kudzu --version` works too). |
 | `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly) | Authoritative server: SQLite metadata plus an object directory. |
 | `kudzu cache` | `--listen 127.0.0.1:7071`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
 | `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--upstream 127.0.0.1:7071`, `--dir $TMPDIR/kudzu-daemon`, `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. |

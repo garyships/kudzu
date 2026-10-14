@@ -57,6 +57,11 @@ func serve(ctx context.Context, addr string, h http.Handler, logger *log.Logger)
 	if err != nil {
 		return err
 	}
+	logger.Printf("listening on %s", addr)
+	return serveListener(ctx, l, h)
+}
+
+func serveListener(ctx context.Context, l net.Listener, h http.Handler) error {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -64,7 +69,6 @@ func serve(ctx context.Context, addr string, h http.Handler, logger *log.Logger)
 		defer cancel()
 		srv.Shutdown(shutdown)
 	}()
-	logger.Printf("listening on %s", addr)
 	if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

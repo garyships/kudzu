@@ -828,3 +828,47 @@ html.js .tradeoff:not(.in) .sbar-fill { transform: scaleX(0); }
 @media (forced-colors: active) {
   .slot.full, .cell.on, .hbar-fill, .sbar-fill, .mbar-fill { background: CanvasText; }
 }
+
+/* ---------- star count, agent chips and example asks ---------- */
+.star-count {
+  margin-left: .45em;
+  padding: .05em .5em;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 600 .82em/1.5 var(--font-mono);
+}
+.btn-primary .star-count { background: rgba(255, 255, 255, .2); color: inherit; }
+.agent-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: 1rem 0 0; }
+.agent-chips span {
+  padding: .2rem .65rem;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 500 .8rem/1.4 var(--font-mono);
+}
+.agent-asks {
+  margin: 1.1rem 0 .4rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.agent-asks-title {
+  margin: 0 0 .5rem;
+  color: var(--text-2);
+  font: 600 .72rem/1.4 var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.agent-asks blockquote {
+  margin: .45rem 0 0;
+  padding: .1rem 0 .1rem .8rem;
+  border-left: 3px solid var(--blossom-fill);
+  color: var(--text);
+  font-size: .98rem;
+  line-height: 1.5;
+}
+.agent-asks blockquote span { color: var(--text-2); font-size: .88em; }
+.agent-asks code { font-size: .88em; }

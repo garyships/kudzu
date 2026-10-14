@@ -4,3 +4,4 @@
 *.frames
 *.test
 *.out
+dist/

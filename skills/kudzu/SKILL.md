@@ -18,6 +18,8 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 
+No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C.
+
 ## Cheat sheet
 
 | Task | Command |

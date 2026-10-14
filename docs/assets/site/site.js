@@ -511,3 +511,19 @@
     }
   })();
 })();
+
+
+/* ---------- live GitHub star count (best effort, hidden on failure) ---------- */
+(function () {
+  var els = document.querySelectorAll("[data-stars]");
+  if (!els.length || !window.fetch) return;
+  fetch("https://api.github.com/repos/garyships/kudzu", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (repo) {
+      if (!repo || typeof repo.stargazers_count !== "number" || repo.stargazers_count < 10) return;
+      var n = repo.stargazers_count;
+      var text = n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n);
+      els.forEach(function (el) { el.textContent = "★ " + text; el.hidden = false; });
+    })
+    .catch(function () {});
+})();

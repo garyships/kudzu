@@ -15,6 +15,14 @@ import (
 	"syscall"
 )
 
+// version is set at release time with -ldflags "-X main.version=...".
+var version = "dev"
+
+func cmdVersion(context.Context, []string) error {
+	fmt.Println("kudzu", version)
+	return nil
+}
+
 type command struct {
 	name    string
 	summary string
@@ -25,6 +33,8 @@ var commands []command
 
 func init() {
 	commands = []command{
+		{"up", "one command: import this git repo and run all three tiers", cmdUp},
+		{"version", "print the kudzu version", cmdVersion},
 		{"server", "run the authoritative server", cmdServer},
 		{"cache", "run a regional object cache (in memory)", cmdCache},
 		{"daemon", "run a per-node object daemon (on disk, unix socket)", cmdDaemon},
@@ -64,6 +74,10 @@ func usage() {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("kudzu", version)
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
 		usage()
 		os.Exit(2)

@@ -12,7 +12,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 
 | Path | Responsibility |
 |---|---|
-| `cmd/kudzu/` | The single binary. `main.go` holds the command table; `infra.go` has `server`, `cache`, `daemon`, `import`, `snapshot`, `stats`; `client.go` has the working-copy, query and `write` commands; `jsonout.go` the `--json` helpers; `mcp.go` is `kudzu mcp`. |
+| `cmd/kudzu/` | The single binary. `main.go` holds the command table; `up.go` is the one-process playground `kudzu up`; `infra.go` has `server`, `cache`, `daemon`, `import`, `snapshot`, `stats`; `client.go` has the working-copy, query and `write` commands; `jsonout.go` the `--json` helpers; `format.go` plural and display-width helpers; `mcp.go` is `kudzu mcp`. |
 | `internal/object/` | Content-addressed objects (blob, tree, unode), changesets, IDs and the stored form used on disk and on the wire. |
 | `internal/store/` | Storage interfaces: `Meta` (SQLite: changeset log, refs with CAS, derived data, git mapping) and `Objects` (`FS`, in-memory `Mem`, layered `Cached`). |
 | `internal/repo/` | Server-side core: derived-data engine (`derive.go`), revisions, skip list and merge base (`ancestry.go`), log/blame/diff/cat/ls (`query.go`), tree edits (`edits.go`), create, three-way merge, rebase, merge and lock-free land (`write.go`). |
@@ -26,6 +26,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/gitimport/` | Incremental one-way import from git. |
 | `internal/lru/` | Small generic LRU. |
 | `internal/e2e/` | Full-stack tests: server → cache → daemon (unix socket) → working copies, all in one process. |
+| `install.sh`, `.goreleaser.yaml` | The curl installer and the release build; pushing a `v*` tag runs `.github/workflows/release.yml`. |
 | `scripts/demo.sh` | End-to-end demo against a real git repository. `scripts/record-demo/` renders the website's demo video. |
 | `docs/` | [DESIGN.md](docs/DESIGN.md) (English) and [DESIGN.zh-CN.md](docs/DESIGN.zh-CN.md), agent docs ([AI.md](docs/AI.md), [llms.txt](docs/llms.txt), [llms-full.txt](docs/llms-full.txt)) and the GitHub Pages site (`index.html`, `assets/`). |
 | `skills/kudzu/` | Agent Skill that teaches an agent to use Kudzu. |
@@ -42,7 +43,7 @@ go test -race ./...                # what CI runs, together with the two above
 go test -race ./internal/mcp/      # one package
 ```
 
-Run the whole stack by hand:
+Run the whole stack in one process with `go run ./cmd/kudzu up` (imports this repository and serves on `unix:///tmp/kudzu.sock`), or by hand:
 
 ```bash
 ./kudzu import --store /tmp/kd --git . --as main

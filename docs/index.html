@@ -70,14 +70,15 @@
       <a href="#demo">Demo</a>
       <a href="#numbers">Numbers</a>
       <a href="#quickstart">Quick start</a>
+      <a href="#agents">For agents</a>
     </nav>
     <div class="nav-actions">
       <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch color theme">
         <svg class="i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
         <svg class="i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
       </button>
-      <a class="btn btn-sm btn-secondary" href="https://github.com/garyships/kudzu">
-        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg><span>GitHub</span>
+      <a class="btn btn-sm btn-secondary gh-star" href="https://github.com/garyships/kudzu" aria-label="Star Kudzu on GitHub">
+        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg><span>Star</span><span class="star-count" data-stars hidden></span>
       </a>
     </div>
   </div>
@@ -117,9 +118,9 @@
     </p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/garyships/kudzu">
-        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg>View on GitHub
+        <svg class="i" aria-hidden="true"><use href="#i-github"/></svg>Star on GitHub<span class="star-count" data-stars hidden></span>
       </a>
-      <a class="btn btn-secondary" href="#quickstart">Quick start</a>
+      <a class="btn btn-secondary" href="#quickstart">Try it in 60&nbsp;s</a>
       <a class="btn btn-ghost" href="#demo">
         <svg class="i" aria-hidden="true"><use href="#i-play"/></svg>Watch demo
       </a>
@@ -668,25 +669,24 @@
   <div class="container">
     <header class="section-head">
       <p class="eyebrow"><span>07</span> Quick start</p>
-      <h2 id="qs-title">Mirror a git repo and try it&nbsp;locally.</h2>
-      <p class="lead">You need Go 1.24+, and git for the import. The import is incremental, so re-running it mirrors new commits.</p>
+      <h2 id="qs-title">Point it at any git repo. One&nbsp;command.</h2>
+      <p class="lead"><code>kudzu up</code> imports a repository's history and runs the server, a regional cache and a node daemon in one process. Re-running it imports only new commits. No Go toolchain needed.</p>
     </header>
 
     <ol class="qs">
       <li class="qs-step">
-        <div class="qs-text"><span class="qs-n">1</span><h3>Install</h3><p>One binary runs the server, the caches and the client.</p></div>
-        <div class="code" data-copy><pre><code>go install github.com/garyships/kudzu/cmd/kudzu@latest</code></pre></div>
+        <div class="qs-text"><span class="qs-n">1</span><h3>Install</h3><p>One binary for macOS and Linux runs the server, the caches and the client. Windows builds and <code>go install</code> work too.</p></div>
+        <div class="code" data-copy><pre><code>curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh</code></pre></div>
       </li>
       <li class="qs-step">
-        <div class="qs-text"><span class="qs-n">2</span><h3>Import git history</h3><p>Every commit becomes a changeset, with derived data computed as it goes.</p></div>
-        <div class="code" data-copy><pre><code>kudzu import --store ./data --git /path/to/repo --as main</code></pre></div>
-      </li>
-      <li class="qs-step">
-        <div class="qs-text"><span class="qs-n">3</span><h3>Start the three tiers</h3><p>Authoritative server, regional cache, and a per-machine daemon on a unix socket.</p></div>
-        <div class="code" data-copy><pre><code>kudzu server --store ./data --listen 127.0.0.1:7070 &amp;
-kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &amp;
-kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &amp;
+        <div class="qs-text"><span class="qs-n">2</span><h3>Bring it up on any git repo</h3><p>Every commit becomes a changeset; the three tiers start on your machine, with the node daemon on a unix socket.</p></div>
+        <div class="code" data-copy><pre><code>cd your-repo &amp;&amp; kudzu up
+# in another terminal:
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock</code></pre></div>
+      </li>
+      <li class="qs-step">
+        <div class="qs-text"><span class="qs-n">3</span><h3>Plug in your agent</h3><p>Sixteen MCP tools for history, blame, diffs, file reads and lock-free writes.</p></div>
+        <div class="code" data-copy><pre><code>claude mcp add kudzu -e KUDZU_REMOTE=unix:///tmp/kudzu.sock -- kudzu mcp</code></pre></div>
       </li>
       <li class="qs-step">
         <div class="qs-text"><span class="qs-n">4</span><h3>Check out a slice, change it, land it</h3><p><code>commit --land</code> creates the changeset on the server and lands it in the same call. <code>-A</code> also picks up new files.</p></div>
@@ -718,6 +718,7 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
         <p class="eyebrow"><span>08</span> Built for AI agents</p>
         <h2 id="agents-title">Version control your agents can just&nbsp;call.</h2>
         <p class="lead"><code>kudzu mcp</code> runs a Model Context Protocol server over stdio. Agents can query history, blame and diffs, and write and land changes, without a checkout. Add <code>--read-only</code> to let an agent look but not land.</p>
+        <p class="agent-chips"><span>16 MCP tools</span><span>11 read</span><span>5 write</span><span>--read-only</span></p>
         <p class="agents-links">More in <a href="https://github.com/garyships/kudzu/blob/main/docs/AI.md">Kudzu for AI agents</a>, the <a href="https://github.com/garyships/kudzu/blob/main/skills/kudzu/SKILL.md">Agent Skill</a>, and <a href="llms.txt"><code>llms.txt</code></a>.</p>
       </header>
       <div class="agents-code">
@@ -740,6 +741,12 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
     }
   }
 }</code></pre></div>
+        </div>
+        <div class="agent-asks" aria-label="Things to ask your agent">
+          <p class="agent-asks-title">Then just ask</p>
+          <blockquote>“Who last changed the retry logic in <code>services/api/handler.go</code>, and what else did that changeset touch?”</blockquote>
+          <blockquote>“What landed under <code>services/api</code> today?”</blockquote>
+          <blockquote>“Bump the version in <code>VERSION</code> and land it on main.” <span>No checkout, no push.</span></blockquote>
         </div>
         <ul class="agent-points">
           <li><b>Ask, don't clone.</b> History, blame and diffs are answered by the server from derived data.</li>

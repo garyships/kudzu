@@ -8,15 +8,61 @@ Version control for monorepos where your committers are AI agents.<br/>
 Rebuilt from Anthropic's [engineering post](https://www.anthropic.com/engineering/redesigning-source-control) the day after it was published.<br/>
 *Your agents write code like kudzu grows. Your version control should keep up.*
 
+[![release](https://img.shields.io/github/v/release/garyships/kudzu?color=3fb950)](https://github.com/garyships/kudzu/releases)
 [![ci](https://github.com/garyships/kudzu/actions/workflows/ci.yml/badge.svg)](https://github.com/garyships/kudzu/actions/workflows/ci.yml)
+[![MCP: 16 tools](https://img.shields.io/badge/MCP-16_tools-8b5cf6)](docs/AI.md)
 [![license: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 ![go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8)
 
-[Website](https://garyships.github.io/kudzu/) · [Demo video](https://garyships.github.io/kudzu/#demo) · [Design](docs/DESIGN.md) · [For AI agents](docs/AI.md) · [中文](README.zh-CN.md)
+[**Website**](https://garyships.github.io/kudzu/) · [**Demo video**](https://garyships.github.io/kudzu/#demo) · [Design](docs/DESIGN.md) · [For AI agents](docs/AI.md) · [中文](README.zh-CN.md)
 
 <img src="docs/assets/demo.gif" alt="Kudzu demo: import git history, sparse clone, concurrent lock-free lands" width="860">
 
+<sub>⭐ If you want agent-scale version control built in the open, star the repo. It's how other people find it.</sub>
+
 </div>
+
+## Try it in 60 seconds
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh
+cd any-git-repo && kudzu up      # imports the history, runs server → cache → daemon
+```
+
+Then, in another terminal:
+
+```bash
+export KUDZU_REMOTE=unix:///tmp/kudzu.sock
+kudzu log -n 5 --oneline                          # history without a checkout
+kudzu blame README.md                             # computed on the server
+kudzu clone --sparse src $KUDZU_REMOTE /tmp/wc    # fetches only src/
+```
+
+With Go: `go install github.com/garyships/kudzu/cmd/kudzu@latest`. Windows builds are on the [releases page](https://github.com/garyships/kudzu/releases).
+
+## 🤖 Version control your agent can drive
+
+Kudzu speaks MCP. One line connects Claude Code, and any other MCP client works the same way:
+
+```bash
+claude mcp add kudzu -e KUDZU_REMOTE=unix:///tmp/kudzu.sock -- kudzu mcp
+```
+
+Then just ask:
+
+> *"Who last changed the retry logic in `services/api/handler.go`, and what else did that changeset touch?"*<br/>
+> *"What landed under `services/api` today?"*<br/>
+> *"Bump the version in `VERSION` and land it on main."* No checkout and no push: the server rebases and lands it.
+
+| 11 read tools | 5 write tools |
+|---|---|
+| `kudzu_log` `kudzu_blame` `kudzu_diff` `kudzu_cat` `kudzu_ls` `kudzu_show` `kudzu_resolve` `kudzu_ancestry` `kudzu_refs` `kudzu_stats` `kudzu_wc_status` | `kudzu_write` (files in, landed changeset out) `kudzu_land` `kudzu_rebase` `kudzu_wc_commit` `kudzu_wc_update` |
+
+- `--read-only` hides the write tools.
+- Agents with a shell can use the [Agent Skill](skills/kudzu/SKILL.md) instead.
+- Every query and commit command takes `--json`.
+
+Setup for Cursor, Claude Desktop and other clients: [docs/AI.md](docs/AI.md). There is also [`llms.txt`](https://garyships.github.io/kudzu/llms.txt) for LLMs.
 
 ## Why not git?
 
@@ -90,24 +136,21 @@ sequenceDiagram
 
 Changesets record only what changed. Root trees, per-path history, a commit-graph skip list and blame are **derived data** that one recursive engine computes, eagerly or lazily. See [docs/DESIGN.md](docs/DESIGN.md) for the details.
 
-## Quick start
+## Run the tiers separately
+
+`kudzu up` runs all three tiers in one process. In production each tier runs on its own: one server, a cache per region, a daemon per machine.
+
+<details>
+<summary>Server, regional cache and node daemon as separate processes</summary>
 
 ```bash
-go install github.com/garyships/kudzu/cmd/kudzu@latest
-
 # import an existing git repo (re-run any time; only new commits are ingested)
 kudzu import --store ./data --git /path/to/repo --as main
 
-# run the three tiers
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
 kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock
-
-# history without a checkout
-kudzu log -n 5 --oneline
-kudzu blame src/server.go
-kudzu diff --from main~3 --to main --stat
 
 # sparse clone, edit, land
 kudzu clone --sparse services/api $KUDZU_REMOTE wc && cd wc
@@ -120,20 +163,7 @@ kudzu write -r main -m "bump version" --land main VERSION=@./VERSION
 
 `scripts/demo.sh /path/to/git/repo` runs the whole flow end to end and prints each tier's cache statistics.
 
-## Use it from an AI agent
-
-Kudzu ships three ways for agents to drive it:
-
-- **MCP server**: `kudzu mcp` exposes 16 tools, including log, blame, diff, cat, and write + land without a checkout. `--read-only` hides the write tools.
-- **Agent Skill**: [`skills/kudzu`](skills/kudzu/SKILL.md) teaches the mental model (no push, land instead of merge, what to do on a 409) and the common workflows.
-- **`--json`** on every query and commit command, for scripts.
-
-```bash
-claude mcp add kudzu -e KUDZU_REMOTE=unix:///tmp/kudzu.sock -- kudzu mcp   # Claude Code; other clients: docs/AI.md
-cp -r skills/kudzu ~/.claude/skills/                                        # the skill, for agents with a shell
-```
-
-More in [docs/AI.md](docs/AI.md), plus [`llms.txt`](https://garyships.github.io/kudzu/llms.txt) for LLMs.
+</details>
 
 ## Numbers
 
@@ -159,8 +189,16 @@ Kudzu is a working prototype with a test suite: `go test -race ./...`. Imports a
 - object GC
 - export back to git
 
-Contributions are welcome. See [AGENTS.md](AGENTS.md) for a map of the code.
+Contributions are welcome. Pick up a [help-wanted issue](https://github.com/garyships/kudzu/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22), and see [AGENTS.md](AGENTS.md) for a map of the code.
 
 ## License
 
 MIT. Kudzu is an unofficial rebuild of the system described in Anthropic's public post [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control). It is not affiliated with or endorsed by Anthropic and contains no Anthropic code.
+
+---
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=garyships/kudzu&type=Date)](https://star-history.com/#garyships/kudzu&Date)
+
+</div>

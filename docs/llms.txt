@@ -2,6 +2,8 @@
 
 > Kudzu is an open-source version control system for monorepos where most clients are AI agents and CI jobs, written in Go. History, blame, diff, rebase and land run on the server, so agents can query history and even commit without a checkout. Clients fetch only the trees and blobs they ask for through tiers of caches, and landing is lock-free: the server rebases onto the current tip and moves the ref with compare-and-swap.
 
+Try it: `curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh`, then `kudzu up` inside any git repository (imports its history and serves all tiers on `unix:///tmp/kudzu.sock`).
+
 Agents can use Kudzu three ways: the `kudzu mcp` MCP server (tools such as `kudzu_log`, `kudzu_blame`, `kudzu_diff`, `kudzu_cat` and `kudzu_write`), the `kudzu` CLI with `--json` output, or the HTTP API directly. Revisions are a ref (`main`), a changeset ID or hex prefix, plus `~N` for first-parent ancestors. The remote comes from `--remote`, else `$KUDZU_REMOTE`, else the working copy.
 
 ## Docs
