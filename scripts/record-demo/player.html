@@ -186,6 +186,12 @@ html, body { margin: 0; background: var(--bg); }
 #card .chip { margin-top: 54px; font-size: 22px; color: var(--text); padding: 12px 24px; border-radius: 999px; border: 1px solid rgba(127, 227, 169, .45); background: rgba(127, 227, 169, .08); }
 #card .chip b { color: var(--green); font-weight: 600; }
 #card .fine { position: absolute; bottom: 44px; font-size: 20px; color: var(--dim); }
+#card .lockup { display: flex; align-items: center; gap: 20px; font-family: "Inter Display", var(--sans); font-size: 72px; font-weight: 750; letter-spacing: -.03em; line-height: 1; }
+#card .lockup svg { width: 88px; height: 88px; }
+#card h1.slogan { font-size: 100px; line-height: 1.1; letter-spacing: -.035em; margin: 44px 0 22px; }
+#card h1.slogan .l1 { color: var(--muted); font-weight: 650; }
+#card h1.slogan span.g { color: var(--green); }
+#card .sub b { color: var(--green); font-weight: 600; }
 #card .url { font-family: var(--mono); font-size: 46px; color: var(--green); margin: 10px 0 18px; }
 .recap { display: grid; grid-template-columns: repeat(4, 330px); gap: 18px; margin-top: 44px; }
 .recap .card { text-align: left; }
@@ -341,12 +347,12 @@ addScene({
   key: 'title', layout: 'card',
   build: (sc, t0) => t0 + 4.0,
   card: () => `
-    <div class="logo"><svg viewBox="0 0 64 64">${TITLE_LOGO}</svg></div>
-    <h1>Kudzu</h1>
-    <div class="tag">Version control for <span>agent-scale</span> monorepos</div>
+    <div class="lockup"><svg viewBox="0 0 64 64">${TITLE_LOGO}</svg>Kudzu</div>
+    <h1 class="slogan"><span class="l1">Git was built for humans.</span><br>Kudzu is built for <span class="g">agents</span>.</h1>
+    <div class="tag">Version control infrastructure for the <span>agent era</span></div>
     <div class="sub">Server-side history · sparse-first clones · lock-free landing · tiered object caches</div>
     <div class="chip">Real commands, real output — <b>last ${fmtN(SUBJ.commits)} commits of ${esc(SUBJ.slug)}</b></div>
-    <div class="fine">Open source (MIT) · an independent take on the design Anthropic described for Scion · not affiliated with Anthropic</div>`,
+    <div class="fine">Open source · MIT</div>`,
 });
 
 // ---- 1. import ------------------------------------------------------------
@@ -656,7 +662,7 @@ addScene({
       <div class="logo"><svg viewBox="0 0 64 64" style="width:96px;height:96px">${END_LOGO}</svg></div>
       <h1 style="font-size:112px">Kudzu</h1>
       <div class="url">github.com/garyships/kudzu</div>
-      <div class="sub">MIT · independent project, not affiliated with Anthropic</div>
+      <div class="sub">Open source · MIT · <b>Star it on GitHub</b></div>
       <div class="recap">${tiles.map(([k, v, d], i) => `<div class="card" style="opacity:${fadeIn(t, sc.start + 0.4 + i * 0.25)}"><div class="wlabel">${k}</div><div class="v g">${v}</div><div class="d">${d}</div></div>`).join('')}</div>
       <div class="fine">Measured in one recorded run on one machine (${HOST.cpus} vCPU), all tiers local — illustrative, not a benchmark. Subject: ${esc(SUBJ.slug)} (MIT), last ${fmtN(SUBJ.commits)} commits.</div>`;
   },
