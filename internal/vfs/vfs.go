@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"sync"
@@ -51,6 +52,7 @@ type FS struct {
 	sizes  *lru.Cache[object.ID, map[string]int64]
 	mu     sync.Mutex
 	flight map[object.ID]*fetch
+	open   map[object.ID]*content // decoded contents of open files
 
 	treesFetched atomic.Int64
 	blobsFetched atomic.Int64
@@ -93,6 +95,7 @@ func Open(ctx context.Context, remote *proto.Remote, rev string, sp sparse.Spec,
 		trees:     lru.New[object.ID, *object.Tree](100_000),
 		sizes:     lru.New[object.ID, map[string]int64](100_000),
 		flight:    map[object.ID]*fetch{},
+		open:      map[object.ID]*content{},
 	}, nil
 }
 
@@ -307,6 +310,78 @@ func splitPath(p string) []string {
 		}
 	}
 	return out
+}
+
+// content is one blob's decoded bytes, shared by the handles open on it.
+type content struct {
+	refs   int // guarded by FS.mu
+	mu     sync.Mutex
+	loaded bool
+	data   []byte
+}
+
+// load fetches the content once; concurrent first readers wait for it, and
+// a failure is not remembered, so the next read tries again.
+func (c *content) load(ctx context.Context, f *FS, n Node) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loaded {
+		data, err := f.ReadFile(context.WithoutCancel(ctx), n)
+		if err != nil {
+			return nil, err
+		}
+		c.data, c.loaded = data, true
+	}
+	return c.data, nil
+}
+
+// Handle is an open file. Its content is fetched and decoded on the first
+// read and then served from memory, shared with every other handle open on
+// the same content, until the last of them is closed: reading a file in
+// small chunks costs one fetch and one decode, however large the file and
+// however small the object cache.
+type Handle struct {
+	fs *FS
+	n  Node
+	c  *content
+}
+
+// OpenFile returns a handle on a file. It fetches nothing yet.
+func (f *FS) OpenFile(n Node) *Handle {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.open[n.ID]
+	if !ok {
+		c = &content{}
+		f.open[n.ID] = c
+	}
+	c.refs++
+	return &Handle{fs: f, n: n, c: c}
+}
+
+// ReadAt reads from the file at off, like io.ReaderAt but with a context.
+func (h *Handle) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	data, err := h.c.load(ctx, h.fs, h.n)
+	if err != nil {
+		return 0, err
+	}
+	if off >= int64(len(data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// Close releases the handle.
+func (h *Handle) Close() {
+	h.fs.mu.Lock()
+	defer h.fs.mu.Unlock()
+	if h.c.refs--; h.c.refs == 0 && h.fs.open[h.n.ID] == h.c {
+		delete(h.fs.open, h.n.ID)
+	}
 }
 
 // ReadFile returns a file's content (or a symlink's target), fetching the

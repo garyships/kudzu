@@ -227,3 +227,60 @@ func TestHidesReservedNames(t *testing.T) {
 		}
 	}
 }
+
+// TestLargeFileReadInChunks: reading a file in small chunks, as FUSE does,
+// fetches and decodes it once, even when it is larger than the object
+// cache, and handles open on the same file share it.
+func TestLargeFileReadInChunks(t *testing.T) {
+	ctx := context.Background()
+	r := repo.New(storetest.Meta(t), &store.Cached{Mem: store.NewMem(16 << 20), Backing: storetest.Objects(t)})
+	big := make([]byte, 1<<20)
+	for i := range big {
+		big[i] = byte(i * 7 % 251)
+	}
+	id, _ := r.WriteBlob(ctx, big)
+	c, err := r.Create(ctx, repo.CreateRequest{Message: "init", Changes: []object.Change{{Path: "big.bin", Mode: object.ModeFile, Blob: id}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Meta.CASRef(ctx, "main", object.Zero, c.ID)
+	srv := httptest.NewServer(server.New(r, log.New(io.Discard, "", 0)).Handler())
+	t.Cleanup(srv.Close)
+	rem, _ := proto.Dial(srv.URL)
+	v, err := Open(ctx, rem, "main", nil, store.NewMem(512<<10)) // smaller than the file
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := v.Stat(ctx, "big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1, h2 := v.OpenFile(n), v.OpenFile(n)
+	var got []byte
+	buf := make([]byte, 128<<10)
+	for off := int64(0); ; {
+		k, err := h1.ReadAt(ctx, buf, off)
+		got = append(got, buf[:k]...)
+		off += int64(k)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(got) != string(big) {
+		t.Fatal("content differs")
+	}
+	if k, err := h2.ReadAt(ctx, buf[:10], int64(len(big))-4); k != 4 || !errors.Is(err, io.EOF) || string(buf[:4]) != string(big[len(big)-4:]) {
+		t.Fatalf("read at the end = %d, %v", k, err)
+	}
+	if st := v.Stats(); st.BlobsFetched != 1 {
+		t.Fatalf("chunked reads through two handles fetched %d times", st.BlobsFetched)
+	}
+	h1.Close()
+	h2.Close()
+	if len(v.open) != 0 {
+		t.Fatal("closed handles still hold the content")
+	}
+}
