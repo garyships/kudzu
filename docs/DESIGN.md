@@ -50,6 +50,8 @@ SQLite tables:
 
 Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
 
+Objects are written before the metadata that names them, so the server's must survive a power loss: its object directory (`store.OpenDurableFS`) syncs each object file before renaming it into place, and the shard directory after. Caches and working copies skip the syncs, since an object they lose is simply fetched again. Every object directory treats an empty file as missing (a stored object always has a two-byte header; an empty file is what a crash leaves of a write that never reached the disk), so the object is fetched or uploaded again instead of being served empty.
+
 ### Several servers (`--meta`, `--objects`)
 
 With the local defaults there is one authoritative server process. `kudzu server --meta postgres://… --objects s3://bucket/prefix` keeps both roles in shared services instead, so any number of stateless servers can run behind a load balancer, as the post intends:
