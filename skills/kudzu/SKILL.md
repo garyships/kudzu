@@ -16,6 +16,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Revisions:** a ref (`main`), a changeset ID or a unique hex prefix (4+ chars), plus git-style suffixes: `~N` for the Nth first-parent ancestor (`main~3`) and `^N` for the Nth parent (`main^2` is a merge's second parent), chained left to right (`main~2^2~1`). Inside a working copy, `-r` defaults to the checked-out changeset. Elsewhere it defaults to `main`.
 - **Remote:** `--remote ADDR` > `$KUDZU_REMOTE` > the working copy's recorded remote. ADDR is `host:port`, `http(s)://host:port` or `unix:///path.sock` (a node daemon).
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
+- **Writable mounts:** inside a directory mounted with `kudzu mount --writable`, edit files normally; `kudzu status`, `diff`, `commit -m MSG --land main` and `update` work there as in a working copy, and only files you read or edit are downloaded.
 - **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 

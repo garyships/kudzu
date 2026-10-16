@@ -800,10 +800,9 @@ kudzu diff --from main~3 --to main --stat</code></pre></div>
     <header class="section-head">
       <p class="eyebrow"><span>09</span> Roadmap</p>
       <h2 id="roadmap-title">What’s next. Come build&nbsp;it.</h2>
-      <p class="lead">Kudzu is a working prototype with tests end to end. Access control, multi-server backends, GC, git export and lazy FUSE checkouts have landed; these pieces are next.</p>
+      <p class="lead">Kudzu is a working prototype with tests end to end. Access control, multi-server backends, GC, git export and lazy, writable FUSE checkouts have landed; this is next.</p>
     </header>
     <ul class="roadmap">
-      <li><span class="rm-dot" aria-hidden="true"></span><h3>Writable virtualized checkouts</h3><p><code>kudzu mount</code> fetches files on first read but is read-only. Next: an overlay that <code>kudzu commit</code> reads.</p></li>
       <li><span class="rm-dot" aria-hidden="true"></span><h3>Spanner &amp; CockroachDB</h3><p>Metadata runs on SQLite or Postgres today; the <code>store.Meta</code> interface and its conformance tests are ready for more.</p></li>
     </ul>
     <div class="final-cta">

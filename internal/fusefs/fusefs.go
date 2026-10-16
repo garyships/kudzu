@@ -25,6 +25,8 @@ import (
 	"github.com/garyships/kudzu/internal/vfs"
 )
 
+var quiet = log.New(io.Discard, "", 0)
+
 // Mount serves v at dir until the returned server is unmounted. A revision
 // never changes, so the kernel may cache entries, attributes and file
 // contents for as long as it likes.
@@ -40,7 +42,8 @@ func Mount(dir string, v *vfs.FS, logger *log.Logger) (*fuse.Server, error) {
 			FsName:      "kudzu:" + v.Changeset.Short(),
 			Name:        "kudzu",
 			Options:     []string{"ro"},
-			DirectMount: true, // mount(2) directly when allowed, else fusermount
+			DirectMount: true,  // mount(2) directly when allowed, else fusermount
+			Logger:      quiet, // go-fuse's notes on optional opcodes the kernel falls back from
 		},
 	})
 }
