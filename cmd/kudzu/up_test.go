@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/proto"
+	"github.com/garyships/kudzu/internal/repo"
 )
 
 // TestUp runs the one-command playground against a fresh git repository and
@@ -145,5 +147,74 @@ func TestDaemonPermissions(t *testing.T) {
 		if err := m.Set(bad); err == nil {
 			t.Errorf("--socket-mode %s was accepted as %v", bad, m.String())
 		}
+	}
+}
+
+// TestImportKeepsLandedWork re-imports after a change landed in kudzu: main
+// stays on it, a warning says how to reconcile, and --force moves it anyway.
+func TestImportKeepsLandedWork(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	gitDir, storeDir := t.TempDir(), t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "empty"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", gitDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	run(t, cmdImport, "--store", storeDir, "--git", gitDir)
+
+	ctx := context.Background()
+	r, closeRepo, err := openRepo(storeDir, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip, _ := r.Meta.GetRef(ctx, "main")
+	blob, _ := r.WriteBlob(ctx, []byte("landed\n"))
+	landed, err := r.Create(ctx, repo.CreateRequest{Parents: []object.ID{tip}, Message: "landed in kudzu",
+		Changes: []object.Change{{Path: "VERSION", Mode: object.ModeFile, Blob: blob}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Land(ctx, landed.ID, "main"); err != nil {
+		t.Fatal(err)
+	}
+	closeRepo()
+	mainRef := func() object.ID {
+		r, closeRepo, err := openRepo(storeDir, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeRepo()
+		id, _ := r.Meta.GetRef(ctx, "main")
+		return id
+	}
+
+	stderr := filepath.Join(t.TempDir(), "stderr")
+	f, err := os.Create(stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = f
+	out := run(t, cmdImport, "--store", storeDir, "--git", gitDir)
+	os.Stderr = saved
+	f.Close()
+	warning, _ := os.ReadFile(stderr)
+	if got := mainRef(); got != landed.ID || !strings.Contains(out, "main -> "+landed.ID.Short()) {
+		t.Fatalf("re-import moved main to %s:\n%s", got.Short(), out)
+	}
+	for _, want := range []string{"warning: left main at " + landed.ID.Short() + ": it has changesets that HEAD (imported as " + tip.Short() + ") lacks", "kudzu export --store " + storeDir + " --git " + gitDir + " --ref main --as kudzu-main", "--force"} {
+		if !strings.Contains(string(warning), want) {
+			t.Fatalf("warning lacks %q:\n%s", want, warning)
+		}
+	}
+
+	run(t, cmdImport, "--store", storeDir, "--git", gitDir, "--force")
+	if got := mainRef(); got != tip {
+		t.Fatalf("import --force left main at %s, want the git tip %s", got.Short(), tip.Short())
 	}
 }

@@ -330,6 +330,7 @@ func cmdImport(ctx context.Context, args []string) error {
 	gitDir := fs.String("git", ".", "git repository to import from")
 	ref := fs.String("ref", "HEAD", "git revision to import")
 	as := fs.String("as", "main", "kudzu ref to point at the imported tip")
+	force := fs.Bool("force", false, "move --as to the imported tip even if that drops changesets landed in kudzu")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -339,12 +340,35 @@ func cmdImport(ctx context.Context, args []string) error {
 	}
 	defer closeRepo()
 	fmt.Printf("importing %s from %s\n", *ref, *gitDir)
-	res, err := gitimport.Run(ctx, r, *gitDir, *ref, *as, os.Stdout)
+	res, err := gitimport.Run(ctx, r, *gitDir, *ref, *as, *force, os.Stdout)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("imported %d new of %d commits in %s; %s -> %s\n", res.Imported, res.Commits, res.Elapsed, *as, res.Tip.Short())
+	fmt.Printf("imported %d new of %d commits in %s; %s -> %s\n", res.Imported, res.Commits, res.Elapsed, *as, res.Ref.Short())
+	storeArgs := "--store " + *stores.dir
+	if *stores.meta != "" || *stores.objects != "" {
+		storeArgs = "<your --store/--meta/--objects flags>"
+	}
+	warnKept(os.Stderr, "import", res, *as, *ref, *gitDir, storeArgs)
 	return nil
+}
+
+// warnKept explains an import that left the kudzu ref where it was because
+// it has changesets the git revision lacks, and how to reconcile the two.
+func warnKept(w io.Writer, cmd string, res *gitimport.Result, as, ref, gitDir, storeArgs string) {
+	if !res.Kept {
+		return
+	}
+	why := fmt.Sprintf("it has changesets that %s (imported as %s) lacks", ref, res.Tip.Short())
+	if res.Diverged {
+		why = fmt.Sprintf("it and %s (imported as %s) have diverged", ref, res.Tip.Short())
+	}
+	fmt.Fprintf(w, "\nkudzu %s: warning: left %s at %s: %s, and moving it would drop the changesets landed in kudzu.\n",
+		cmd, as, res.Ref.Short(), why)
+	fmt.Fprintf(w, `  To keep them, export them to a git branch, merge that into %s and import again:
+    kudzu export %s --git %s --ref %s --as kudzu-%s
+  To move %s to %s anyway (the changesets stay in the store), re-run with --force.
+`, ref, storeArgs, gitDir, as, as, as, ref)
 }
 
 func cmdExport(ctx context.Context, args []string) error {

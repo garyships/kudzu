@@ -97,7 +97,7 @@ Cursor、Claude Desktop 等客户端的配置见 [docs/AI.md](docs/AI.md)。
 <summary>把 server、区域缓存、节点 daemon 分开启动</summary>
 
 ```bash
-kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行
+kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行；main 只会快进，在 Kudzu 里 land 的改动不会被回退
 kudzu export --store ./data --git /path/to/mirror.git --ref main   # 把 Kudzu 里 land 的内容同步回 git 镜像，也是增量的
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
