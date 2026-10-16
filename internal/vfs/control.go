@@ -202,7 +202,8 @@ func FindMount(dir string) (*MountClient, bool) {
 		return nil, false
 	}
 	for d := abs; ; d = filepath.Dir(d) {
-		if b, err := os.ReadFile(filepath.Join(d, filepath.FromSlash(MountInfoPath))); err == nil {
+		p := filepath.Join(d, filepath.FromSlash(MountInfoPath))
+		if b, err := os.ReadFile(p); err == nil && ownedByMe(p) {
 			var info MountInfo
 			if json.Unmarshal(b, &info) != nil || info.Control == "" {
 				return nil, false

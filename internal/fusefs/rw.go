@@ -173,7 +173,10 @@ func (n *rwNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*
 func (n *rwNode) kudzuDir(ctx context.Context) *gofs.Inode {
 	if n.kudzu == nil {
 		dir := n.NewPersistentInode(ctx, &gofs.Inode{}, gofs.StableAttr{Mode: syscall.S_IFDIR})
-		file := &gofs.MemRegularFile{Data: n.info, Attr: fuse.Attr{Mode: 0o444}}
+		// Owned by whoever mounted it: the kudzu command only trusts a
+		// mount.json that belongs to the user running it.
+		owner := fuse.Owner{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())}
+		file := &gofs.MemRegularFile{Data: n.info, Attr: fuse.Attr{Mode: 0o444, Owner: owner}}
 		dir.AddChild("mount.json", n.NewPersistentInode(ctx, file, gofs.StableAttr{}), false)
 		n.kudzu = dir
 	}

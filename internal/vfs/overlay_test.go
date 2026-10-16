@@ -302,3 +302,26 @@ func TestOverlayResumeAndUpdate(t *testing.T) {
 		t.Fatal(fmt.Errorf("the new base's file: %w", err))
 	}
 }
+
+// TestFindMountTrustsOnlyOwnFiles: a mount.json someone else owns, say
+// planted in /tmp, must not redirect the kudzu command (and its token).
+func TestFindMountTrustsOnlyOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	meta := filepath.Join(dir, ".kudzu")
+	os.MkdirAll(meta, 0o755)
+	os.WriteFile(filepath.Join(meta, "mount.json"), []byte(`{"control": "/tmp/evil.sock", "remote": "evil.example:80"}`), 0o644)
+	os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755)
+	m, ok := FindMount(filepath.Join(dir, "a", "b"))
+	if !ok || m.Info.Root != dir || m.Info.Remote != "evil.example:80" {
+		t.Fatalf("own mount.json not found: %+v %v", m, ok)
+	}
+	if os.Getuid() != 0 {
+		t.Skip("changing a file's owner needs root")
+	}
+	if err := os.Chown(filepath.Join(meta, "mount.json"), 12345, 12345); err != nil {
+		t.Skip(err)
+	}
+	if m, ok := FindMount(filepath.Join(dir, "a", "b")); ok {
+		t.Fatalf("trusted a mount.json owned by someone else: %+v", m)
+	}
+}
