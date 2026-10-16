@@ -157,7 +157,7 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 
 - **Sparse rules** (`internal/sparse`, same as git's cone mode): everything under a chosen directory, plus the files directly inside each of its ancestors.
 - **Clone** fetches trees level by level, then blobs in batches. Blobs coming off the stream are verified and written straight into the working copy on a worker pool; nothing is written to disk and read back.
-- **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects.
+- **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects. Its size is totalled the first time a write needs it rather than on open, so a command that only reads (`log`, `status`) costs the same however large the cache has grown; each command opens the working copy at most once.
 - **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference.
 - **Status** trusts files whose size and mtime match the index, and hashes the rest.
 - **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.

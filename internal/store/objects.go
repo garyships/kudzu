@@ -77,6 +77,8 @@ const touchInterval = 10 * time.Minute
 type FS struct {
 	dir      string
 	maxBytes int64
+	sizeMu   sync.Mutex
+	sized    bool // size holds the total, see loadSize
 	size     atomic.Int64
 	gcMu     sync.Mutex
 }
@@ -91,20 +93,30 @@ func OpenFS(dir string, maxBytes int64) (*FS, error) {
 			return nil, err
 		}
 	}
-	s := &FS{dir: dir, maxBytes: maxBytes}
-	if maxBytes > 0 {
-		var total int64
-		filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-			if err == nil && !d.IsDir() {
-				if info, err := d.Info(); err == nil {
-					total += info.Size()
-				}
-			}
-			return nil
-		})
-		s.size.Store(total)
+	return &FS{dir: dir, maxBytes: maxBytes}, nil
+}
+
+// loadSize totals a bounded cache's files the first time something needs
+// the number (a write, Size or GC), not on open: walking a cache of 100k
+// objects takes about half a second, and most commands that open a working
+// copy never write to its cache.
+func (s *FS) loadSize() {
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	if s.sized || s.maxBytes <= 0 {
+		return
 	}
-	return s, nil
+	var total int64
+	filepath.WalkDir(s.dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	s.size.Store(total)
+	s.sized = true
 }
 
 func (s *FS) path(id object.ID) string {
@@ -190,6 +202,7 @@ func (s *FS) DeleteIfOlder(_ context.Context, id object.ID, cutoff time.Time) (b
 	if !info.ModTime().Before(cutoff) {
 		return false, 0, nil
 	}
+	s.loadSize() // first, or the total would miss this object twice
 	if err := os.Remove(p); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, 0, nil
@@ -237,6 +250,7 @@ func (s *FS) Put(_ context.Context, id object.ID, stored []byte) error {
 		if _, err := os.Stat(p); err == nil {
 			return nil // keep size accounting exact for bounded caches
 		}
+		s.loadSize() // first, or the total would count this object twice
 	}
 	f, err := os.CreateTemp(filepath.Join(s.dir, "tmp"), "obj-")
 	if err != nil {
@@ -296,11 +310,17 @@ func (s *FS) GC(target int64) (removed int, err error) {
 			removed++
 		}
 	}
+	s.sizeMu.Lock()
 	s.size.Store(total)
+	s.sized = true
+	s.sizeMu.Unlock()
 	return removed, err
 }
 
-func (s *FS) Size() int64 { return s.size.Load() }
+func (s *FS) Size() int64 {
+	s.loadSize()
+	return s.size.Load()
+}
 
 // Mem is an in-memory LRU bounded by total bytes.
 type Mem struct {
