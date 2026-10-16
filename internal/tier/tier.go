@@ -32,7 +32,6 @@ type Tier struct {
 	Local store.Objects
 	Up    *proto.Remote
 
-	sem      chan struct{}
 	mu       sync.Mutex
 	inflight map[object.ID]*call
 	start    time.Time
@@ -54,15 +53,19 @@ type call struct {
 	err     error
 }
 
+// New returns a tier that fetches misses through up, with at most
+// upstreamConcurrency requests to it in flight (it sets up's fetch limit).
 func New(name string, local store.Objects, up *proto.Remote, upstreamConcurrency int) *Tier {
 	if upstreamConcurrency <= 0 {
 		upstreamConcurrency = 16
 	}
+	// The cap is on requests, not on batches of misses: one batch can span
+	// several requests, which Fetch runs in parallel.
+	up.SetFetchLimit(upstreamConcurrency)
 	return &Tier{
 		Name:     name,
 		Local:    local,
 		Up:       up,
-		sem:      make(chan struct{}, upstreamConcurrency),
 		inflight: map[object.ID]*call{},
 		start:    time.Now(),
 	}
@@ -164,8 +167,6 @@ func (t *Tier) FetchMany(ctx context.Context, ids []object.ID, emit func(object.
 func (t *Tier) fetchUpstream(ids []object.ID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	t.sem <- struct{}{}
-	defer func() { <-t.sem }()
 	t.upRequests.Add(1)
 	got := make(map[object.ID]bool, len(ids))
 	missing, err := t.Up.Fetch(ctx, ids, func(id object.ID, b []byte) error {

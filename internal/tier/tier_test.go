@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/proto"
@@ -34,6 +36,48 @@ func upstream(t *testing.T, serve func(w http.ResponseWriter, ids []object.ID)) 
 		t.Fatal(err)
 	}
 	return up
+}
+
+// TestUpstreamConcurrency: the upstream concurrency limit counts requests
+// in flight, however the misses are batched. A batch larger than one fetch
+// request used to run several requests at once under one slot.
+func TestUpstreamConcurrency(t *testing.T) {
+	const limit = 2
+	var inflight, peak atomic.Int64
+	up := upstream(t, func(w http.ResponseWriter, ids []object.ID) {
+		n := inflight.Add(1)
+		defer inflight.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		for _, id := range ids {
+			proto.WriteMissing(w, id)
+		}
+	})
+	tr := New("cache", store.NewMem(1<<20), up, limit)
+	var wg sync.WaitGroup
+	for b := 0; b < 3; b++ {
+		ids := make([]object.ID, 3*4096)
+		for i := range ids {
+			ids[i] = object.Hash(object.KindBlob, []byte(fmt.Sprint(b, i)))
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			missing, err := tr.FetchMany(context.Background(), ids, func(object.ID, []byte) error { return nil })
+			if err != nil || len(missing) != len(ids) {
+				t.Errorf("FetchMany: %d of %d missing, %v", len(missing), len(ids), err)
+			}
+		}()
+	}
+	wg.Wait()
+	if p := peak.Load(); p > limit {
+		t.Fatalf("%d upstream requests in flight with a limit of %d", p, limit)
+	}
 }
 
 // TestCorruptUpstreamObjectNotCached: an object that arrives damaged from

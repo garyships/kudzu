@@ -27,6 +27,8 @@ type Remote struct {
 	Token string
 	base  string
 	hc    *http.Client
+
+	fetchSlots chan struct{} // see SetFetchLimit
 }
 
 func Dial(addr string) (*Remote, error) {
@@ -176,6 +178,14 @@ const (
 	fetchAttempts    = 3
 )
 
+// SetFetchLimit caps the fetch requests in flight at once on this Remote,
+// across all callers of Fetch together (each of which still runs a few
+// chunks in parallel within the cap). A tier uses it to bound its load on
+// the tier above. Call it before the Remote is in use.
+func (r *Remote) SetFetchLimit(n int) {
+	r.fetchSlots = make(chan struct{}, n)
+}
+
 // Fetch requests objects in chunks, a few chunks at a time. fn is called once
 // per received object (never concurrently). Interrupted chunks are retried for
 // just the objects that did not arrive. It returns IDs no tier has. The first
@@ -287,6 +297,14 @@ func (r *Remote) fetchChunk(ctx context.Context, ids []object.ID, fn func(object
 }
 
 func (r *Remote) fetchOnce(ctx context.Context, ids []object.ID, fn func(object.ID, []byte, bool) error) error {
+	if r.fetchSlots != nil {
+		select {
+		case r.fetchSlots <- struct{}{}:
+			defer func() { <-r.fetchSlots }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	resp, err := r.do(ctx, "POST", "/objects/fetch", nil, bytes.NewReader(EncodeIDs(ids)), "application/octet-stream")
 	if err != nil {
 		return err
