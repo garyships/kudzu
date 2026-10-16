@@ -2,6 +2,7 @@ package object
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,19 @@ func TestUnodeRoundTrip(t *testing.T) {
 	got, err = DecodeUnode(d.Encode())
 	if err != nil || !got.Dir || len(got.Entries) != 1 || len(got.Parents) != 0 {
 		t.Fatalf("dir unode round trip: %v", err)
+	}
+}
+
+// TestUnodeParentCountOverflow: a parent count whose size in bytes wraps
+// around 64 bits must be rejected, not passed on to a slice expression.
+func TestUnodeParentCountOverflow(t *testing.T) {
+	for _, n := range []uint64{1 << 59, 1<<59 + 1, 1<<64 - 1, 3} {
+		b := make([]byte, 1+IDSize)
+		b = binary.AppendUvarint(b, n)
+		b = append(b, make([]byte, 40)...)
+		if _, err := DecodeUnode(b); err == nil {
+			t.Fatalf("parent count %d accepted with 40 bytes left", n)
+		}
 	}
 }
 
