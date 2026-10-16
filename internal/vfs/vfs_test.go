@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/garyships/kudzu/internal/lru"
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/proto"
 	"github.com/garyships/kudzu/internal/repo"
@@ -160,6 +161,70 @@ func TestSparse(t *testing.T) {
 	}
 	if _, err := v.Stat(ctx, "services/api/util.go"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestHidesReservedNames: entries a hostile server names .git or .kudzu, in
+// any spelling and at any depth, are neither listed nor found.
+func TestHidesReservedNames(t *testing.T) {
+	ctx := context.Background()
+	r := repo.New(storetest.Meta(t), storetest.Objects(t))
+	blob, err := r.WriteBlob(ctx, []byte("[core]\n\tfsmonitor = touch /tmp/pwned\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := func(es ...object.Entry) object.ID {
+		object.SortEntries(es)
+		id, err := r.WriteTree(ctx, &object.Tree{Entries: es})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	gitDir := tree(object.Entry{Name: "config", Mode: object.ModeFile, ID: blob})
+	sub := tree(
+		object.Entry{Name: ".git", Mode: object.ModeDir, ID: gitDir},
+		object.Entry{Name: "ok.txt", Mode: object.ModeFile, ID: blob},
+	)
+	root := tree(
+		object.Entry{Name: ".GIT", Mode: object.ModeDir, ID: gitDir},
+		object.Entry{Name: ".git.", Mode: object.ModeDir, ID: gitDir},
+		object.Entry{Name: ".kudzu", Mode: object.ModeFile, ID: blob},
+		object.Entry{Name: "README.md", Mode: object.ModeFile, ID: blob},
+		object.Entry{Name: "sub", Mode: object.ModeDir, ID: sub},
+	)
+	srv := httptest.NewServer(server.New(r, log.New(io.Discard, "", 0)).Handler())
+	t.Cleanup(srv.Close)
+	rem, _ := proto.Dial(srv.URL)
+	f := &FS{
+		Tree:   root,
+		remote: rem,
+		cache:  store.NewMem(1 << 20),
+		trees:  lru.New[object.ID, *object.Tree](100),
+		sizes:  lru.New[object.ID, map[string]int64](100),
+		flight: map[object.ID]*fetch{},
+	}
+	for dir, want := range map[string]string{"": "README.md sub", "sub": "sub/ok.txt"} {
+		n, err := f.Stat(ctx, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := f.ReadDir(ctx, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range entries {
+			got = append(got, e.Path)
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("ReadDir(%q) = %v, want %s", dir, got, want)
+		}
+	}
+	for _, p := range []string{".GIT", ".GIT/config", ".git.", ".kudzu", "sub/.git/config"} {
+		if _, err := f.Stat(ctx, p); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("Stat(%q) = %v, want not found", p, err)
+		}
 	}
 }
 

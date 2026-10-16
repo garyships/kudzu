@@ -30,7 +30,9 @@ The unit of work is a **changeset**, an entry in an append-only log. Unlike a gi
 
 Object IDs are `sha256("<kind> <len>\0" + content)`. The **stored form** `[kind][codec][payload]` is identical everywhere: on the server's disk, in the regional cache's memory, on a node daemon's disk, and on the wire. As the post says, a cache streams exactly the bytes the daemon will store, without computing deltas. Only blobs are compressed; trees and unodes are mostly hashes and don't compress.
 
-Tree decoding rejects names like `..` or `a/b`, so a hostile server cannot make a client write outside its working copy.
+Tree decoding rejects names like `..` or `a/b`, and entries out of order or repeated, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), a checkout refuses to write one, and a mount does not show one.
+
+An object's content is at most 1 GiB (`object.MaxSize`), and no reader trusts a peer about sizes: a frame whose header claims more than the largest stored object is refused, a frame's buffer grows only as its bytes arrive, and decompression stops at the limit. Neither a 37-byte frame header nor a small payload that inflates without end can make a tier allocate more than that.
 
 ## 2. Storage (`internal/store`)
 
@@ -139,18 +141,21 @@ POST /objects/fetch     body: concatenated 32-byte IDs
 **Negotiation is want-based.** The client never says what it has; it asks for specific objects by ID. Starting from the root tree, it requests each level's missing trees in one batch, expands them, and repeats. Then it requests blobs in batches. As a result:
 
 - Every request is for an immutable object, so any cache can answer it.
-- There is no multi-gigabyte packfile. Responses stream object by object, and an interrupted transfer re-asks only for what didn't arrive (`Remote.fetchChunk`).
+- There is no multi-gigabyte packfile. Responses stream object by object, and an interrupted transfer re-asks only for what didn't arrive (`Remote.fetchChunk`). An object counts as arrived once the caller has accepted it: if the caller rejects one (a hash mismatch, a full disk), the fetch stops with that error. A tier whose source fails partway through a response sends the frames it has and then aborts the response instead of ending it, so the client sees a broken stream and re-asks for the rest rather than taking a short answer for a whole one. Snapshots (`/api/snapshot`) fail the same way, so `kudzu snapshot` fails and leaves no file instead of saving part of a revision for `--seed`.
 - Sparse checkouts need no protocol support: the client just doesn't ask for subtrees it doesn't want.
 
-Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash.
+Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash without holding large content (`object.Check`): content up to 256 KiB is inflated once and hashed; anything larger is inflated twice, once to count the length that the hash covers and once into the hash, so a decompression bomb costs CPU but not memory.
+
+Every tier closes keep-alive connections that have been idle for two minutes, but sets no read or write timeout, since uploads, snapshots and lands can rightly take long. Clients (`proto.Dial`) give up on connecting after 30 seconds, on a TLS handshake after 10, and on response headers after 10 minutes, which leaves room for a land or rebase that runs on the server before it answers but keeps a stuck tier from hanging an agent forever.
 
 ## 7. Cache tiers (`internal/tier`)
 
 `kudzu cache` (memory) and `kudzu daemon` (disk, unix socket) are the same code with a different local store:
 
 - Hits are served immediately; misses are fetched upstream in batches.
+- Every object fetched upstream is verified before it is stored. A copy damaged on the way fails the requests waiting for it and is fetched again next time, instead of being cached and served to every client from then on.
 - **Concurrent misses coalesce.** A request for an object already being fetched waits for that fetch. In the tests, 50 simultaneous cold requests produce one upstream request. Fetches run in a detached context, so a client hanging up doesn't fail the others waiting.
-- **Upstream concurrency is capped** (`--upstream-concurrency`). This is the post's failure-domain isolation: a struggling regional cache can't take down the servers above it.
+- **Upstream concurrency is capped** (`--upstream-concurrency`): the flag bounds the fetch requests in flight to the tier above, however the misses are batched (`Remote.SetFetchLimit`). This is the post's failure-domain isolation: a struggling regional cache can't take down the servers above it.
 - Everything that isn't an object request (`/api/*`, uploads) is proxied upstream, so all tiers look the same to a client.
 - A daemon can start from a snapshot (`--seed`, produced by `kudzu snapshot`) and then fetch only what changed, as the post's daemons start from a periodically refreshed snapshot.
 - `/stats` reports hit rate, coalesced misses and upstream traffic.
@@ -159,11 +164,12 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 
 - **Sparse rules** (`internal/sparse`, same as git's cone mode): everything under a chosen directory, plus the files directly inside each of its ancestors.
 - **Clone** fetches trees level by level, then blobs in batches. Blobs coming off the stream are verified and written straight into the working copy on a worker pool; nothing is written to disk and read back.
+- **A checkout trusts no tree.** Besides the checks in §1, it refuses names the client's system would not store as they are: on Windows, names with `\ / : * ? " < > |` or control characters, a trailing dot or space, or a device name such as `CON` or `aux.c`; on macOS and Windows, two names in one directory that differ only in case. It never writes through a symlink: directories are created one component at a time without following links, each write checks the directories above it first, and symlinks are created last, one at a time.
 - **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects. Its size is totalled the first time a write needs it rather than on open, so a command that only reads (`log`, `status`) costs the same however large the cache has grown; each command opens the working copy at most once.
-- **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference.
-- **Status** trusts files whose size and mtime match the index, and hashes the rest. It skips ignored directories unless they hold tracked files, checked against a set of tracked directories built once per run.
+- **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference. Before changing anything it refuses if an untracked file, ignored or not, is where the new revision puts a file or needs a directory; `--force` discards such files along with local edits. `kudzu sparse` refuses the same way and never forces.
+- **Status** trusts files whose size and mtime match the index, and hashes the rest. It skips ignored directories unless they hold tracked files, checked against a set of tracked directories built once per run. A nested git checkout's `.git` is ignored, since no changeset may contain it.
 - **Ownership.** Commands find the working copy by walking up to a `.kudzu` directory, and use it only if it belongs to the current user (git's "dubious ownership" rule), so a `.kudzu` planted in a shared directory cannot point them, and the token they send, at another server. `KUDZU_SAFE_DIRECTORY` overrides it.
-- **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
+- **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns. The index keeps each committed file's size and mtime from just before it was read, so an edit made while the commit is in flight still shows as modified.
 
 ### Virtualized checkout (`internal/vfs`, `internal/fusefs`)
 

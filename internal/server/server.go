@@ -236,7 +236,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		if miss {
 			continue
 		}
-		kind, _, err := object.Verify(id, data)
+		// Check rather than Verify: a payload that inflates to a gigabyte
+		// must not be held in memory just to be hashed.
+		kind, err := object.Check(id, data)
 		if err != nil {
 			s.fail(w, fmt.Errorf("%w: %v", repo.ErrInvalid, err))
 			return
@@ -868,15 +870,25 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-kudzu-frames")
 	w.Header().Set("X-Kudzu-Changeset", id.String())
 	bw := bufio.NewWriterSize(w, 1<<16)
+	written := 0
 	err = s.Repo.WalkObjects(ctx, tree, spec, func(oid object.ID) error {
 		b, err := s.Repo.Objs.Get(ctx, oid)
 		if err != nil {
 			return err
 		}
+		written += object.IDSize + 5 + len(b)
 		return proto.WriteFrame(bw, oid, b)
 	})
+	if err != nil && bw.Buffered() == written {
+		// Nothing has left the buffer: the client can still get a status.
+		s.fail(w, err)
+		return
+	}
 	if err != nil {
 		s.Log.Printf("snapshot: %v", err)
+		// A clean end would pass a partial snapshot off as a whole one:
+		// break the stream so that the client sees an error.
+		panic(http.ErrAbortHandler)
 	}
 	bw.Flush()
 }

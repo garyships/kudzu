@@ -259,7 +259,7 @@ func printLand(res *repo.LandResult, ref string) {
 func cmdUpdate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	rev := fs.String("r", "main", "revision")
-	force := fs.Bool("force", false, "discard local changes")
+	force := fs.Bool("force", false, "discard local changes, and untracked files in the way")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err

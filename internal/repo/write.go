@@ -126,7 +126,9 @@ func (r *Repo) normalizeChanges(ctx context.Context, base object.ID, in []object
 	out := make([]object.Change, 0, len(in))
 	seen := map[string]bool{}
 	for _, ch := range in {
-		if err := object.ValidatePath(ch.Path); err != nil {
+		// A reserved path can still be deleted, so a repository that got one
+		// before it was reserved can be rid of it.
+		if err := object.ValidatePath(ch.Path); err != nil && !(ch.Deleted() && errors.Is(err, object.ErrReserved)) {
 			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
 		if seen[ch.Path] {

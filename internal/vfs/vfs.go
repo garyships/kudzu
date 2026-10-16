@@ -219,8 +219,8 @@ func (f *FS) sizesOf(ctx context.Context, tree object.ID) (map[string]int64, err
 }
 
 // ReadDir lists a directory: one tree object and one size request the first
-// time, nothing afterwards. Entries outside the sparse cone, and submodules,
-// are left out.
+// time, nothing afterwards. Entries outside the sparse cone, submodules and
+// reserved names (.git, .kudzu) are left out.
 func (f *FS) ReadDir(ctx context.Context, dir Node) ([]Node, error) {
 	if !dir.IsDir() {
 		return nil, fmt.Errorf("%s: %w", dir.Path, errNotDir)
@@ -254,6 +254,10 @@ var errNotDir = errors.New("not a directory")
 func (f *FS) node(parent string, e object.Entry) (Node, bool) {
 	p := object.JoinPath(parent, e.Name)
 	switch {
+	case object.ReservedName(e.Name):
+		// No server creates these, but a hostile one could send them: a
+		// .git/config in a mount could make git run commands.
+		return Node{}, false
 	case e.IsDir():
 		if !f.sparse.WantDir(p) {
 			return Node{}, false

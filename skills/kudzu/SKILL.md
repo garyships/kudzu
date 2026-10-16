@@ -18,6 +18,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - **Writable mounts:** inside a directory mounted with `kudzu mount --writable`, edit files normally; `kudzu status`, `diff`, `commit -m MSG --land main` and `update` work there as in a working copy, and only files you read or edit are downloaded.
 - **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access.
+- **Paths:** no path may contain a `.git` or `.kudzu` directory, in any case and at any depth; the server answers 400. A git checkout nested in a working copy is ignored by `status` and `commit -A`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 
 No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C.
@@ -37,7 +38,7 @@ No server to talk to? `kudzu up` inside any git repository imports its history a
 | Local changes | `kudzu status` (M modified, D deleted, ? untracked) · `kudzu diff` (no `--from`/`--to`) |
 | Commit (and land) | `kudzu commit -m MSG [-A] [--land main]` (`-A` adds untracked files) |
 | Land / rebase what you committed | `kudzu land [--ref main]` · `kudzu rebase [-d main]` |
-| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified) |
+| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified or untracked files are in the way; `--force` discards both) |
 | Widen or narrow the checkout | `kudzu sparse [show \| set DIRS \| add DIRS \| remove DIRS]` |
 | Commit without any checkout | `kudzu write -r PARENT -m MSG [--land main] [--delete PATH]... PATH=@FILE \| PATH=@-` |
 

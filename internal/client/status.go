@@ -106,8 +106,11 @@ func (w *WC) Status(ctx context.Context) ([]FileStatus, error) {
 		if rel == "." {
 			return nil
 		}
+		// .git and .kudzu can never be committed, so a nested git checkout
+		// is ignored.
+		reserved := object.ReservedName(d.Name())
 		if d.IsDir() {
-			if rel == metaDir || !sp.WantDir(rel) || (ig.match(rel, true) && !tracksUnder(rel)) {
+			if rel == metaDir || !sp.WantDir(rel) || ((reserved || ig.match(rel, true)) && !tracksUnder(rel)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -125,7 +128,7 @@ func (w *WC) Status(ctx context.Context) ([]FileStatus, error) {
 		}
 		ie, tracked := w.Index[rel]
 		if !tracked {
-			if !ig.match(rel, false) {
+			if !reserved && !ig.match(rel, false) {
 				out = append(out, FileStatus{Path: rel, Code: '?', Mode: mode})
 			}
 			return nil
