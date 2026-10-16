@@ -30,7 +30,7 @@
 
 每个对象的 ID 是 `sha256("<kind> <len>\0" + content)`。**存储形式** `[kind][codec][payload]` 在每一层都一样：服务端磁盘、区域缓存内存、节点 daemon 磁盘，以及网络上传输的都是同一份字节。这对应文章里的说法：cache 直接从内存流式发送 daemon 要的磁盘格式，不需要现算缺什么，也不做 delta 压缩。只有 blob 会压缩，tree 和 unode 主要是哈希，压不下去。
 
-客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，以及乱序或重复的条目，恶意服务端没法让客户端写到工作区外面。路径的任何一级都不能是 `.git` 或 `.kudzu`，比较时忽略大小写和末尾的点与空格（`.GIT`、`.git.` 都算），NTFS 短文件名 `git~1`、`kudzu~1` 也不行：嵌套的 `.git/config` 会让在那个目录里运行的每条 git 命令都去执行它的 `core.fsmonitor` 指定的程序。创建 changeset 时拒绝添加这样的路径（删除仍然可以），checkout 时也拒绝写出。
+客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，以及乱序或重复的条目，恶意服务端没法让客户端写到工作区外面。路径的任何一级都不能是 `.git` 或 `.kudzu`，比较时忽略大小写和末尾的点与空格（`.GIT`、`.git.` 都算），NTFS 短文件名 `git~1`、`kudzu~1` 也不行：嵌套的 `.git/config` 会让在那个目录里运行的每条 git 命令都去执行它的 `core.fsmonitor` 指定的程序。创建 changeset 时拒绝添加这样的路径（删除仍然可以），checkout 时拒绝写出，mount 里也不显示。
 
 ## 2. 存储（`internal/store`）
 

@@ -30,7 +30,7 @@ The unit of work is a **changeset**, an entry in an append-only log. Unlike a gi
 
 Object IDs are `sha256("<kind> <len>\0" + content)`. The **stored form** `[kind][codec][payload]` is identical everywhere: on the server's disk, in the regional cache's memory, on a node daemon's disk, and on the wire. As the post says, a cache streams exactly the bytes the daemon will store, without computing deltas. Only blobs are compressed; trees and unodes are mostly hashes and don't compress.
 
-Tree decoding rejects names like `..` or `a/b`, and entries out of order or repeated, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), and a checkout refuses to write one.
+Tree decoding rejects names like `..` or `a/b`, and entries out of order or repeated, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), a checkout refuses to write one, and a mount does not show one.
 
 ## 2. Storage (`internal/store`)
 
