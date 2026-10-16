@@ -135,8 +135,14 @@ func serve(ctx context.Context, addr string, h http.Handler, logger *log.Logger)
 	return serveListener(ctx, l, h)
 }
 
+// idleTimeout closes keep-alive connections nobody uses. Clients drop theirs
+// after 90 seconds (proto.Dial), so normally they close first.
+var idleTimeout = 2 * time.Minute
+
 func serveListener(ctx context.Context, l net.Listener, h http.Handler) error {
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}
+	// No ReadTimeout or WriteTimeout: uploads, snapshots and lands can
+	// rightly take longer than any fixed bound.
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: idleTimeout}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -361,7 +367,9 @@ func cmdSnapshot(ctx context.Context, args []string) error {
 		err = cerr
 	}
 	if err != nil {
-		return err
+		// A daemon seeded from a partial snapshot would not know it.
+		os.Remove(*out)
+		return fmt.Errorf("snapshot of %s not written: %w", *rev, err)
 	}
 	fmt.Printf("wrote %s (%.1f MB)\n", *out, float64(n)/(1<<20))
 	return nil

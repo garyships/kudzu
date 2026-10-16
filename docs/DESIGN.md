@@ -32,6 +32,8 @@ Object IDs are `sha256("<kind> <len>\0" + content)`. The **stored form** `[kind]
 
 Tree decoding rejects names like `..` or `a/b`, and entries out of order or repeated, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), a checkout refuses to write one, and a mount does not show one.
 
+An object's content is at most 1 GiB (`object.MaxSize`), and no reader trusts a peer about sizes: a frame whose header claims more than the largest stored object is refused, a frame's buffer grows only as its bytes arrive, and decompression stops at the limit. Neither a 37-byte frame header nor a small payload that inflates without end can make a tier allocate more than that.
+
 ## 2. Storage (`internal/store`)
 
 The post describes two storage roles. Both are interfaces in Kudzu:
@@ -137,18 +139,21 @@ POST /objects/fetch     body: concatenated 32-byte IDs
 **Negotiation is want-based.** The client never says what it has; it asks for specific objects by ID. Starting from the root tree, it requests each level's missing trees in one batch, expands them, and repeats. Then it requests blobs in batches. As a result:
 
 - Every request is for an immutable object, so any cache can answer it.
-- There is no multi-gigabyte packfile. Responses stream object by object, and an interrupted transfer re-asks only for what didn't arrive (`Remote.fetchChunk`).
+- There is no multi-gigabyte packfile. Responses stream object by object, and an interrupted transfer re-asks only for what didn't arrive (`Remote.fetchChunk`). An object counts as arrived once the caller has accepted it: if the caller rejects one (a hash mismatch, a full disk), the fetch stops with that error. A tier whose source fails partway through a response sends the frames it has and then aborts the response instead of ending it, so the client sees a broken stream and re-asks for the rest rather than taking a short answer for a whole one. Snapshots (`/api/snapshot`) fail the same way, so `kudzu snapshot` fails and leaves no file instead of saving part of a revision for `--seed`.
 - Sparse checkouts need no protocol support: the client just doesn't ask for subtrees it doesn't want.
 
-Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash.
+Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash without holding large content (`object.Check`): content up to 256 KiB is inflated once and hashed; anything larger is inflated twice, once to count the length that the hash covers and once into the hash, so a decompression bomb costs CPU but not memory.
+
+Every tier closes keep-alive connections that have been idle for two minutes, but sets no read or write timeout, since uploads, snapshots and lands can rightly take long. Clients (`proto.Dial`) give up on connecting after 30 seconds, on a TLS handshake after 10, and on response headers after 10 minutes, which leaves room for a land or rebase that runs on the server before it answers but keeps a stuck tier from hanging an agent forever.
 
 ## 7. Cache tiers (`internal/tier`)
 
 `kudzu cache` (memory) and `kudzu daemon` (disk, unix socket) are the same code with a different local store:
 
 - Hits are served immediately; misses are fetched upstream in batches.
+- Every object fetched upstream is verified before it is stored. A copy damaged on the way fails the requests waiting for it and is fetched again next time, instead of being cached and served to every client from then on.
 - **Concurrent misses coalesce.** A request for an object already being fetched waits for that fetch. In the tests, 50 simultaneous cold requests produce one upstream request. Fetches run in a detached context, so a client hanging up doesn't fail the others waiting.
-- **Upstream concurrency is capped** (`--upstream-concurrency`). This is the post's failure-domain isolation: a struggling regional cache can't take down the servers above it.
+- **Upstream concurrency is capped** (`--upstream-concurrency`): the flag bounds the fetch requests in flight to the tier above, however the misses are batched (`Remote.SetFetchLimit`). This is the post's failure-domain isolation: a struggling regional cache can't take down the servers above it.
 - Everything that isn't an object request (`/api/*`, uploads) is proxied upstream, so all tiers look the same to a client.
 - A daemon can start from a snapshot (`--seed`, produced by `kudzu snapshot`) and then fetch only what changed, as the post's daemons start from a periodically refreshed snapshot.
 - `/stats` reports hit rate, coalesced misses and upstream traffic.

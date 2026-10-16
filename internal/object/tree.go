@@ -172,7 +172,9 @@ func DecodeUnode(b []byte) (*Unode, error) {
 	copy(u.Linknode[:], b[1:1+IDSize])
 	b = b[1+IDSize:]
 	n, k := binary.Uvarint(b)
-	if k <= 0 || uint64(len(b)-k) < n*IDSize {
+	// Divide rather than multiply: n comes from the wire, and n*IDSize
+	// wraps around for n near 2^59.
+	if k <= 0 || n > uint64(len(b)-k)/IDSize {
 		return nil, errors.New("unode: bad parents")
 	}
 	b = b[k:]
