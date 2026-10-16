@@ -187,7 +187,7 @@ Errors are tool results with `isError: true`: invalid arguments, unknown revisio
 
 ## HTTP API
 
-Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored).
+Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache, verifying every object they fetch upstream before caching it. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored).
 
 Errors: `{"error": "message"}` with status 400 (invalid request), 401 (missing or unknown token, when the server runs with `--auth`), 403 (`{"error": "permission denied: alice may not write docs/a.md", "path": "docs/a.md"}`; `path` is the denied path, or the ref for a land), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
 

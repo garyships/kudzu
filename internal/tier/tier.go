@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -170,8 +171,15 @@ func (t *Tier) fetchUpstream(ids []object.ID) {
 	missing, err := t.Up.Fetch(ctx, ids, func(id object.ID, b []byte) error {
 		t.upObjects.Add(1)
 		t.upBytes.Add(int64(len(b)))
-		t.Local.Put(ctx, id, b)
 		got[id] = true
+		// Whatever is stored here is served to every client from now on,
+		// so a copy damaged on the way fails this fetch instead.
+		if _, err := object.Check(id, b); err != nil {
+			t.upFailures.Add(1)
+			t.complete(id, nil, false, fmt.Errorf("from upstream %s: %w", t.Up.Addr, err))
+			return nil
+		}
+		t.Local.Put(ctx, id, b)
 		t.complete(id, b, false, nil)
 		return nil
 	})

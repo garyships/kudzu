@@ -149,6 +149,7 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 `kudzu cache` (memory) and `kudzu daemon` (disk, unix socket) are the same code with a different local store:
 
 - Hits are served immediately; misses are fetched upstream in batches.
+- Every object fetched upstream is verified before it is stored. A copy damaged on the way fails the requests waiting for it and is fetched again next time, instead of being cached and served to every client from then on.
 - **Concurrent misses coalesce.** A request for an object already being fetched waits for that fetch. In the tests, 50 simultaneous cold requests produce one upstream request. Fetches run in a detached context, so a client hanging up doesn't fail the others waiting.
 - **Upstream concurrency is capped** (`--upstream-concurrency`). This is the post's failure-domain isolation: a struggling regional cache can't take down the servers above it.
 - Everything that isn't an object request (`/api/*`, uploads) is proxied upstream, so all tiers look the same to a client.
