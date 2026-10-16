@@ -59,12 +59,14 @@ func TestUnodeRoundTrip(t *testing.T) {
 }
 
 func TestValidatePath(t *testing.T) {
-	for _, p := range []string{"a", "a/b.txt", ".github/x"} {
+	for _, p := range []string{"a", "a/b.txt", ".github/x", ".kudzuignore", "a/.kudzuignore", ".gitignore", "a/.gitkeep", "a/.github/x", "git", "a/git~2", "x.git", ".git-blame-ignore-revs", "kudzu"} {
 		if err := ValidatePath(p); err != nil {
 			t.Fatalf("%q rejected: %v", p, err)
 		}
 	}
-	for _, p := range []string{"", "/a", "a/", "a//b", "../x", "a/./b", ".kudzu/state"} {
+	for _, p := range []string{"", "/a", "a/", "a//b", "../x", "a/./b", ".kudzu/state", ".git/config", "sub/.git/config", "a/b/.git",
+		".GIT/config", "sub/.Git/HEAD", "sub/.git./config", "sub/.git /config", "sub/.git. ./config", "GIT~1/config", "sub/git~1/config",
+		"x/.kudzu/state.json", ".KUDZU/index", ".kudzu./x", "sub/kudzu~1/x"} {
 		if ValidatePath(p) == nil {
 			t.Fatalf("%q accepted", p)
 		}

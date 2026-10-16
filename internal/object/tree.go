@@ -202,15 +202,36 @@ func ValidatePath(p string) error {
 	if strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") {
 		return fmt.Errorf("invalid path %q: leading or trailing slash", p)
 	}
-	for i, c := range strings.Split(p, "/") {
+	reserved := ""
+	for _, c := range strings.Split(p, "/") {
 		if c == "" || c == "." || c == ".." || strings.IndexByte(c, 0) >= 0 {
 			return fmt.Errorf("invalid path %q", p)
 		}
-		if i == 0 && c == ".kudzu" {
-			return fmt.Errorf("invalid path %q: .kudzu is reserved", p)
+		if reserved == "" && ReservedName(c) {
+			reserved = c
 		}
 	}
+	if reserved != "" {
+		return fmt.Errorf("invalid path %q: %s is %w", p, reserved, ErrReserved)
+	}
 	return nil
+}
+
+// ErrReserved is wrapped by ValidatePath's error for a path that is well
+// formed but goes through a reserved name.
+var ErrReserved = errors.New("reserved")
+
+// ReservedName reports whether a path component, at any depth, would be
+// taken for .git or .kudzu: a nested .git/config can make git run commands,
+// and .kudzu holds a working copy's state. Case is ignored, as Windows and
+// macOS ignore it, and so are trailing dots and spaces, which Windows drops;
+// git~1 and kudzu~1 are the NTFS short names.
+func ReservedName(name string) bool {
+	switch strings.ToLower(strings.TrimRight(name, ". ")) {
+	case ".git", ".kudzu", "git~1", "kudzu~1":
+		return true
+	}
+	return false
 }
 
 // JoinPath joins a directory path and a name ("" is the root).

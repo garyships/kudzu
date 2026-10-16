@@ -30,7 +30,7 @@
 
 每个对象的 ID 是 `sha256("<kind> <len>\0" + content)`。**存储形式** `[kind][codec][payload]` 在每一层都一样：服务端磁盘、区域缓存内存、节点 daemon 磁盘，以及网络上传输的都是同一份字节。这对应文章里的说法：cache 直接从内存流式发送 daemon 要的磁盘格式，不需要现算缺什么，也不做 delta 压缩。只有 blob 会压缩，tree 和 unode 主要是哈希，压不下去。
 
-客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，恶意服务端没法让客户端写到工作区外面。
+客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，恶意服务端没法让客户端写到工作区外面。路径的任何一级都不能是 `.git` 或 `.kudzu`，比较时忽略大小写和末尾的点与空格（`.GIT`、`.git.` 都算），NTFS 短文件名 `git~1`、`kudzu~1` 也不行：嵌套的 `.git/config` 会让在那个目录里运行的每条 git 命令都去执行它的 `core.fsmonitor` 指定的程序。创建 changeset 时拒绝添加这样的路径（删除仍然可以），checkout 时也拒绝写出。
 
 ## 2. 存储（`internal/store`）
 
@@ -157,9 +157,10 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 - **sparse 规则**（`internal/sparse`，和 git 的 cone mode 一样）：选中的目录下所有内容，加上它各级祖先目录里直接放着的文件
 - **clone**：按层批量拉 tree，最后批量拉 blob。blob 从拉取流里出来后，在 worker 池里校验哈希并直接写成工作区文件，不会先落盘再读回来
+- **checkout 不信任任何 tree**：除了第 1 节的检查，还会拒绝客户端系统没法原样保存的名字：Windows 上含 `\ / : * ? " < > |` 或控制字符、以点或空格结尾、或是设备名（如 `CON`、`aux.c`）的名字；macOS 和 Windows 上同一目录里只差大小写的两个名字
 - **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰
 - **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小
-- **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希
+- **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希。嵌套 git 仓库的 `.git` 会被忽略，因为 changeset 里不能有它
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
 
 ### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）

@@ -421,3 +421,34 @@ func TestUpdateForce(t *testing.T) {
 		t.Fatalf("working copy still dirty: %+v", st)
 	}
 }
+
+// TestReservedPaths: no changeset may put a .git or .kudzu directory
+// anywhere. A checkout would write sub/.git/config, and any git command run
+// in sub/ would then execute what its core.fsmonitor says.
+func TestReservedPaths(t *testing.T) {
+	s := newStack(t)
+	head := s.seed(t)
+	ctx := context.Background()
+	config, err := s.repo.WriteBlob(ctx, []byte("[core]\n\tfsmonitor = \"touch pwned; false\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rem, _ := proto.Dial(s.remote())
+	create := func(p string) error {
+		return rem.PostJSON(ctx, "/api/changesets", map[string]any{
+			"parents": []object.ID{head}, "author": "mallory", "message": "m",
+			"changes": []object.Change{{Path: p, Mode: object.ModeFile, Blob: config}},
+		}, nil)
+	}
+	for _, p := range []string{".git/config", "sub/.git/config", "sub/.GIT/config", "sub/.git./config", "sub/.git /config", "sub/git~1/config", "sub/.kudzu/state.json", ".Kudzu/index"} {
+		var he *proto.HTTPError
+		if err := create(p); !errors.As(err, &he) || he.Status != http.StatusBadRequest || !strings.Contains(he.Message, "reserved") {
+			t.Errorf("create %s: %v", p, err)
+		}
+	}
+	for _, p := range []string{".kudzuignore", "sub/.gitignore", "sub/.github/x", "sub/git~2"} {
+		if err := create(p); err != nil {
+			t.Errorf("create %s: %v", p, err)
+		}
+	}
+}

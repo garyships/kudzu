@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -111,16 +112,17 @@ func (w *WC) collectFiles(ctx context.Context, root object.ID, sp sparse.Spec) (
 			if err != nil {
 				return nil, err
 			}
+			if err := checkDir(runtime.GOOS, d.path, t.Entries, sp); err != nil {
+				return nil, err
+			}
 			for _, e := range t.Entries {
 				p := object.JoinPath(d.path, e.Name)
-				if p == metaDir {
-					return nil, fmt.Errorf("remote tree contains reserved path %s", metaDir)
+				if !materialized(e, p, sp) {
+					continue
 				}
 				if e.IsDir() {
-					if sp.WantDir(p) {
-						next = append(next, dirRef{p, e.ID})
-					}
-				} else if e.Mode != object.ModeGitlink && sp.WantFile(p) {
+					next = append(next, dirRef{p, e.ID})
+				} else {
 					files[p] = e
 				}
 			}
@@ -162,6 +164,9 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 			if err != nil {
 				return nil, nil, err
 			}
+			if err := checkDir(runtime.GOOS, pair.path, nt.Entries, sp); err != nil {
+				return nil, nil, err
+			}
 			oe, ne := ot.Entries, nt.Entries
 			for i, j := 0, 0; i < len(oe) || j < len(ne); {
 				var o, n *object.Entry
@@ -184,9 +189,6 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 					name = n.Name
 				}
 				p := object.JoinPath(pair.path, name)
-				if p == metaDir {
-					return nil, nil, fmt.Errorf("remote tree contains reserved path %s", metaDir)
-				}
 				if o != nil && n != nil && *o == *n {
 					continue
 				}

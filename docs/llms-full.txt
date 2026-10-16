@@ -80,7 +80,7 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | Command | Flags | Purpose |
 |---|---|---|
 | `kudzu clone REMOTE DIR` | `-r main`, `--sparse dir1,dir2` | Create a working copy. DIR must be empty or missing. |
-| `kudzu status` | `--json` | `M` modified, `D` deleted, `?` untracked (respects `.kudzuignore`: `name`, `dir/` and `path/glob` patterns). |
+| `kudzu status` | `--json` | `M` modified, `D` deleted, `?` untracked (respects `.kudzuignore`: `name`, `dir/` and `path/glob` patterns; a nested git checkout's `.git` is always ignored). |
 | `kudzu commit` | `-m MSG` (required), `-A` (add untracked files), `--land REF`, `--author`, `--json` | Upload missing blobs and create a changeset on the checked-out one; with `--land`, land it in the same call. If the land rebased, the checkout moves to the landed changeset. On a conflict nothing changes locally. |
 | `kudzu land` | `--ref main`, `--json` | Land the checked-out changeset (and its unlanded ancestors), then move the checkout to what landed. |
 | `kudzu rebase` | `-d main` | Rebase the checked-out stack onto `-d` on the server and move the checkout there. No ref moves. |
@@ -231,7 +231,7 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 
 - `POST /objects/missing` `{"ids": [id, ...]}` → `{"missing": [id, ...]}`. Ask before uploading.
 - `POST /objects/upload`, a body of frames → `{"stored": n}`. Only blobs can be uploaded; trees and unodes are derived by the server, which verifies every hash.
-- `POST /api/changesets` `{"parents": [id], "author", "message", "changes": [{"path", "mode", "blob"}], "time"?, "tz"?, "extra"?, "land"?: "main"}` → `{"id", "tree", "seq", "land"?: {"landed", "previous", "attempts", "rebased"}}`. Every blob must already be on the server. With `land`, a 409 means the changeset was created but not landed, and its ID is not returned (create first, then call `/api/land`, if you need it). `parents: []` creates a root changeset.
+- `POST /api/changesets` `{"parents": [id], "author", "message", "changes": [{"path", "mode", "blob"}], "time"?, "tz"?, "extra"?, "land"?: "main"}` → `{"id", "tree", "seq", "land"?: {"landed", "previous", "attempts", "rebased"}}`. Every blob must already be on the server. With `land`, a 409 means the changeset was created but not landed, and its ID is not returned (create first, then call `/api/land`, if you need it). `parents: []` creates a root changeset. No path component may be `.git` or `.kudzu` in any case, also with trailing dots or spaces, or `git~1` or `kudzu~1` (400), except in a deletion.
 - `POST /api/land` `{"head": rev, "ref": "main"}` → `{"landed", "previous", "attempts", "rebased"}`. `landed == previous` means `head` was already on the ref.
 - `POST /api/rebase` `{"head": rev, "onto": rev}` → `{"head", "tree"}`. No ref moves.
 - `POST /api/merge` `{"ours": rev, "theirs": rev, "author", "message"}` → `{"id", "tree", "seq"}`, a two-parent changeset whose changes are listed relative to `ours`. No ref moves.
