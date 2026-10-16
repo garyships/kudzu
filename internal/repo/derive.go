@@ -49,6 +49,10 @@ func (r *Repo) getDerived(ctx context.Context, kind string, key object.ID) ([]by
 }
 
 func (r *Repo) putDerived(ctx context.Context, kind string, key object.ID, v []byte) error {
+	// Objects a value names (unodes, say) must be on disk before it is stored.
+	if err := store.Sync(r.Objs); err != nil {
+		return err
+	}
 	if err := r.Meta.PutDerived(ctx, kind, key, v); err != nil {
 		return err
 	}

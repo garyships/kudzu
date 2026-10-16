@@ -50,7 +50,7 @@ SQLite tables:
 
 Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
 
-Objects are written before the metadata that names them, so the server's must survive a power loss: its object directory (`store.OpenDurableFS`) syncs each object file before renaming it into place, and the shard directory after. Caches and working copies skip the syncs, since an object they lose is simply fetched again. Every object directory treats an empty file as missing (a stored object always has a two-byte header; an empty file is what a crash leaves of a write that never reached the disk), so the object is fetched or uploaded again instead of being served empty.
+Objects are written before the metadata that names them, so the server's must survive a power loss. Its object directory (`store.OpenDurableFS`) makes them durable in batches: `Put` only records each new object, and the repository calls `store.Sync` before it appends a changeset or stores a derived value, so everything the metadata names is on disk first. On Linux one `syncfs(2)` covers the whole batch; elsewhere each recorded file is fsynced, then its shard directory. That is one sync per changeset rather than two per object, which keeps a large import about as fast as with no syncing at all. Caches and working copies skip the syncs, since an object they lose is simply fetched again. Every object directory treats an empty file as missing (a stored object always has a two-byte header; an empty file is what a crash leaves of a write that never reached the disk), so the object is fetched or uploaded again instead of being served empty.
 
 ### Several servers (`--meta`, `--objects`)
 
