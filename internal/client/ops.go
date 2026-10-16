@@ -126,7 +126,9 @@ func (w *WC) dirty(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// Update moves the checkout to rev, touching only files that differ.
+// Update moves the checkout to rev, touching only files that differ. It
+// refuses if tracked files are modified, or if untracked files are where rev
+// has files, unless force discards them.
 func (w *WC) Update(ctx context.Context, rev string, force bool) error {
 	st, err := w.Status(ctx)
 	if err != nil {
@@ -168,7 +170,7 @@ func (w *WC) Update(ctx context.Context, rev string, force bool) error {
 	}
 	if len(writes) > 0 || len(deletes) > 0 {
 		fmt.Fprintf(w.Out, "updating %d %s, removing %d\n", len(writes), pick(len(writes) == 1, "file", "files"), len(deletes))
-		if err := w.apply(ctx, writes, deletes); err != nil {
+		if err := w.apply(ctx, writes, deletes, force); err != nil {
 			return err
 		}
 	}
@@ -193,7 +195,7 @@ func (w *WC) SetSparse(ctx context.Context, sp sparse.Spec) error {
 			deletes = append(deletes, p)
 		}
 	}
-	if err := w.apply(ctx, files, deletes); err != nil {
+	if err := w.apply(ctx, files, deletes, false); err != nil {
 		return err
 	}
 	w.State.Sparse = sp

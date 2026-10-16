@@ -58,6 +58,34 @@ func TestUnodeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTreeEntriesSortedAndUnique(t *testing.T) {
+	id := Hash(KindBlob, []byte("x"))
+	for _, names := range [][]string{{"b", "a"}, {"a", "a"}, {"a", "c", "b"}, {"a.txt", "a"}} {
+		var es []Entry
+		for _, n := range names {
+			es = append(es, Entry{Name: n, Mode: ModeFile, ID: id})
+		}
+		if _, err := DecodeTree((&Tree{Entries: es}).Encode()); err == nil {
+			t.Errorf("tree %q accepted", names)
+		}
+		if _, err := DecodeUnode((&Unode{Dir: true, Entries: es}).Encode()); err == nil {
+			t.Errorf("unode %q accepted", names)
+		}
+	}
+	// A symlink and a directory with the same name: a checkout would make
+	// the directory, replace it with the link, then write through the link.
+	dup := &Tree{Entries: []Entry{{Name: "a", Mode: ModeSymlink, ID: id}, {Name: "a", Mode: ModeDir, ID: EmptyTreeID}}}
+	if _, err := DecodeTree(dup.Encode()); err == nil {
+		t.Error("tree with a repeated name accepted")
+	}
+	// SortEntries order (plain bytes) decodes.
+	es := []Entry{{Name: "b", ID: id}, {Name: "a.txt", ID: id}, {Name: "a", ID: id}, {Name: "B", ID: id}, {Name: "a-b", ID: id}}
+	SortEntries(es)
+	if got, err := DecodeTree((&Tree{Entries: es}).Encode()); err != nil || len(got.Entries) != len(es) {
+		t.Fatalf("sorted tree rejected: %v", err)
+	}
+}
+
 func TestValidatePath(t *testing.T) {
 	for _, p := range []string{"a", "a/b.txt", ".github/x", ".kudzuignore", "a/.kudzuignore", ".gitignore", "a/.gitkeep", "a/.github/x", "git", "a/git~2", "x.git", ".git-blame-ignore-revs", "kudzu"} {
 		if err := ValidatePath(p); err != nil {

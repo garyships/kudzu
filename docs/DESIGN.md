@@ -30,7 +30,7 @@ The unit of work is a **changeset**, an entry in an append-only log. Unlike a gi
 
 Object IDs are `sha256("<kind> <len>\0" + content)`. The **stored form** `[kind][codec][payload]` is identical everywhere: on the server's disk, in the regional cache's memory, on a node daemon's disk, and on the wire. As the post says, a cache streams exactly the bytes the daemon will store, without computing deltas. Only blobs are compressed; trees and unodes are mostly hashes and don't compress.
 
-Tree decoding rejects names like `..` or `a/b`, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), and a checkout refuses to write one.
+Tree decoding rejects names like `..` or `a/b`, and entries out of order or repeated, so a hostile server cannot make a client write outside its working copy. No path may go through `.git` or `.kudzu` at any depth, ignoring case and trailing dots and spaces (`.GIT`, `.git.`), nor through their NTFS short names `git~1` and `kudzu~1`: a nested `.git/config` makes every git command run in that directory execute whatever its `core.fsmonitor` says. Create refuses to add such a path (it may still delete one), and a checkout refuses to write one.
 
 ## 2. Storage (`internal/store`)
 
@@ -157,9 +157,9 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 
 - **Sparse rules** (`internal/sparse`, same as git's cone mode): everything under a chosen directory, plus the files directly inside each of its ancestors.
 - **Clone** fetches trees level by level, then blobs in batches. Blobs coming off the stream are verified and written straight into the working copy on a worker pool; nothing is written to disk and read back.
-- **A checkout trusts no tree.** Besides the checks in §1, it refuses names the client's system would not store as they are: on Windows, names with `\ / : * ? " < > |` or control characters, a trailing dot or space, or a device name such as `CON` or `aux.c`; on macOS and Windows, two names in one directory that differ only in case.
+- **A checkout trusts no tree.** Besides the checks in §1, it refuses names the client's system would not store as they are: on Windows, names with `\ / : * ? " < > |` or control characters, a trailing dot or space, or a device name such as `CON` or `aux.c`; on macOS and Windows, two names in one directory that differ only in case. It never writes through a symlink: directories are created one component at a time without following links, each write checks the directories above it first, and symlinks are created last, one at a time.
 - **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects.
-- **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference.
+- **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference. Before changing anything it refuses if an untracked file, ignored or not, is where the new revision puts a file or needs a directory; `--force` discards such files along with local edits. `kudzu sparse` refuses the same way and never forces.
 - **Status** trusts files whose size and mtime match the index, and hashes the rest. A nested git checkout's `.git` is ignored, since no changeset may contain it.
 - **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
 

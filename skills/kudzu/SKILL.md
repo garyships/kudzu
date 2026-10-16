@@ -37,7 +37,7 @@ No server to talk to? `kudzu up` inside any git repository imports its history a
 | Local changes | `kudzu status` (M modified, D deleted, ? untracked) · `kudzu diff` (no `--from`/`--to`) |
 | Commit (and land) | `kudzu commit -m MSG [-A] [--land main]` (`-A` adds untracked files) |
 | Land / rebase what you committed | `kudzu land [--ref main]` · `kudzu rebase [-d main]` |
-| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified) |
+| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified or untracked files are in the way; `--force` discards both) |
 | Widen or narrow the checkout | `kudzu sparse [show \| set DIRS \| add DIRS \| remove DIRS]` |
 | Commit without any checkout | `kudzu write -r PARENT -m MSG [--land main] [--delete PATH]... PATH=@FILE \| PATH=@-` |
 

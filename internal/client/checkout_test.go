@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -157,6 +158,22 @@ func writeTo(t *testing.T, root, p, content string) {
 	}
 }
 
+func readFrom(t *testing.T, root, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func emptyDir(t *testing.T, dir string) {
+	t.Helper()
+	if es, err := os.ReadDir(dir); err != nil || len(es) != 0 {
+		t.Fatalf("something was written outside the working copy, in %s: %v %v", dir, es, err)
+	}
+}
+
 // A nested .git/config can make any git command run in that directory
 // execute a program (core.fsmonitor); .kudzu holds the working copy's state.
 func TestCloneRefusesReservedNames(t *testing.T) {
@@ -195,5 +212,188 @@ func TestStatusIgnoresNestedGit(t *testing.T) {
 	}
 	if _, err := wc.Commit(ctx, "vendor lib", "a", true, ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A tree holding both a symlink "a" and a directory "a": the clone made
+// directory a, replaced it with the symlink, then wrote a/payload through it.
+func TestCloneRefusesRepeatedNames(t *testing.T) {
+	outside := t.TempDir()
+	h := newHostile()
+	payload := h.blob("pwned\n")
+	h.last[payload] = true
+	h.root = h.tree(
+		object.Entry{Name: "a", Mode: object.ModeSymlink, ID: h.blob(outside)},
+		dir("a", h.tree(file("payload", payload))),
+	)
+	if _, err := Clone(context.Background(), h.serve(t), filepath.Join(t.TempDir(), "wc"), "main", nil, io.Discard); err == nil {
+		t.Error("clone accepted a tree with a repeated name")
+	}
+	emptyDir(t, outside)
+}
+
+// An untracked symlink where an update needs a directory was followed.
+func TestUpdateNeverWritesThroughSymlink(t *testing.T) {
+	r, remote := newServer(t, nil)
+	c1 := commit(t, r, object.Zero, map[string]string{"README": "hi\n"})
+	wc := clone(t, remote, nil)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(wc.Root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	c2 := commit(t, r, c1, map[string]string{"a/payload": "upstream\n"})
+	ctx := context.Background()
+	var ue *UntrackedError
+	if err := wc.Update(ctx, c2.String(), false); !errors.As(err, &ue) || len(ue.Paths) != 1 || ue.Paths[0] != "a" {
+		t.Errorf("update through an untracked symlink: %v", err)
+	}
+	emptyDir(t, outside)
+	// --force replaces the symlink with a directory; it never follows it.
+	if err := wc.Update(ctx, c2.String(), true); err != nil {
+		t.Fatal(err)
+	}
+	emptyDir(t, outside)
+	if info, err := os.Lstat(filepath.Join(wc.Root, "a")); err != nil || !info.IsDir() {
+		t.Fatalf("a is not a directory after a forced update: %v", err)
+	}
+	if got := readFrom(t, wc.Root, "a/payload"); got != "upstream\n" {
+		t.Fatalf("a/payload = %q", got)
+	}
+}
+
+// The checks under apply's own: whatever slipped past them, a write or a
+// directory never goes through a symlink.
+func TestWriteChecksParents(t *testing.T) {
+	r, remote := newServer(t, nil)
+	commit(t, r, object.Zero, map[string]string{"README": "hi\n"})
+	wc := clone(t, remote, nil)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(wc.Root, "d")); err != nil {
+		t.Fatal(err)
+	}
+	id := object.Hash(object.KindBlob, []byte("x"))
+	for _, force := range []bool{false, true} {
+		if _, err := wc.writeFile("d/x", object.ModeFile, id, []byte("x"), true, force); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Errorf("writeFile(d/x, force=%v) through a symlink: %v", force, err)
+		}
+		if _, err := wc.writeFile("d/l", object.ModeSymlink, id, []byte("/"), true, force); err == nil {
+			t.Errorf("symlink d/l (force=%v) created through a symlink", force)
+		}
+	}
+	if err := wc.mkdirs("d/sub", false); err == nil {
+		t.Error("mkdirs followed a symlink")
+	}
+	emptyDir(t, outside)
+	if err := wc.mkdirs("d/sub", true); err != nil {
+		t.Fatal(err)
+	}
+	emptyDir(t, outside)
+	if info, err := os.Lstat(filepath.Join(wc.Root, "d", "sub")); err != nil || !info.IsDir() {
+		t.Fatalf("forced mkdirs did not replace the symlink: %v", err)
+	}
+}
+
+// A plain update deleted an untracked directory where upstream added a file,
+// and overwrote an untracked file upstream added too.
+func TestUpdateKeepsUntrackedFiles(t *testing.T) {
+	r, remote := newServer(t, nil)
+	c1 := commit(t, r, object.Zero, map[string]string{"README": "hi\n", "gen/old.txt": "old\n", "x": "x\n"})
+	wc := clone(t, remote, nil)
+	writeTo(t, wc.Root, "build/artifact.bin", "hours of work")
+	writeTo(t, wc.Root, "notes.txt", "my notes")
+	writeTo(t, wc.Root, "gen/local.txt", "mine")
+	writeTo(t, wc.Root, ".kudzuignore", "*.log\n")
+	writeTo(t, wc.Root, "debug.log", "ignored, but still mine")
+	c2 := commit(t, r, c1, map[string]string{
+		"README":      "hello\n",
+		"build":       "now a file\n",
+		"notes.txt":   "upstream\n",
+		"gen/old.txt": "", "gen": "gen is a file now\n",
+		"debug.log": "upstream log\n",
+	})
+	ctx := context.Background()
+	err := wc.Update(ctx, c2.String(), false)
+	var ue *UntrackedError
+	if !errors.As(err, &ue) || strings.Join(ue.Paths, " ") != "build/artifact.bin debug.log gen/local.txt notes.txt" {
+		t.Errorf("update over untracked files: %v", err)
+	}
+	for p, want := range map[string]string{"build/artifact.bin": "hours of work", "notes.txt": "my notes", "gen/local.txt": "mine", "debug.log": "ignored, but still mine"} {
+		if b, _ := os.ReadFile(filepath.Join(wc.Root, filepath.FromSlash(p))); string(b) != want {
+			t.Errorf("untracked %s = %q", p, b)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	// Nothing changed: not even files that were safe to update.
+	if wc.State.Changeset != c1 || readFrom(t, wc.Root, "README") != "hi\n" || readFrom(t, wc.Root, "gen/old.txt") != "old\n" {
+		t.Fatal("a refused update changed the working copy")
+	}
+	// --force discards them.
+	if err := wc.Update(ctx, c2.String(), true); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]string{"README": "hello\n", "build": "now a file\n", "notes.txt": "upstream\n", "gen": "gen is a file now\n"} {
+		if got := readFrom(t, wc.Root, p); got != want {
+			t.Fatalf("after --force, %s = %q", p, got)
+		}
+	}
+	if st, err := wc.Status(ctx); err != nil || len(st) != 1 || st[0].Path != ".kudzuignore" {
+		t.Fatalf("status after a forced update: %+v %v", st, err)
+	}
+}
+
+// Tracked files and directories may change kind; only what is untracked
+// stops an update.
+func TestUpdateReplacesTrackedPaths(t *testing.T) {
+	r, remote := newServer(t, nil)
+	c1 := commit(t, r, object.Zero, map[string]string{"a/x": "x\n", "a/y": "y\n", "b": "b\n"})
+	wc := clone(t, remote, nil)
+	// An untracked empty directory left in a does not hold anything.
+	if err := os.MkdirAll(filepath.Join(wc.Root, "a", "empty", "dirs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c2 := commit(t, r, c1, map[string]string{"a/x": "", "a/y": "", "a": "a file\n", "b": "", "b/c": "c\n"})
+	ctx := context.Background()
+	if err := wc.Update(ctx, c2.String(), false); err != nil {
+		t.Fatal(err)
+	}
+	if readFrom(t, wc.Root, "a") != "a file\n" || readFrom(t, wc.Root, "b/c") != "c\n" {
+		t.Fatal("update did not swap files and directories")
+	}
+	if err := wc.Update(ctx, c1.String(), false); err != nil {
+		t.Fatal(err)
+	}
+	if readFrom(t, wc.Root, "a/x") != "x\n" || readFrom(t, wc.Root, "b") != "b\n" {
+		t.Fatal("update did not swap them back")
+	}
+	if st, err := wc.Status(ctx); err != nil || len(st) != 0 {
+		t.Fatalf("status: %+v %v", st, err)
+	}
+}
+
+// Widening a sparse checkout overwrote untracked files in the new directory.
+func TestSetSparseKeepsUntrackedFiles(t *testing.T) {
+	r, remote := newServer(t, nil)
+	commit(t, r, object.Zero, map[string]string{"a/x": "x\n", "b/notes.txt": "upstream\n", "b/y": "y\n"})
+	wc := clone(t, remote, sparse.Spec{"a"})
+	writeTo(t, wc.Root, "b/notes.txt", "my notes")
+	ctx := context.Background()
+	var ue *UntrackedError
+	if err := wc.SetSparse(ctx, sparse.Spec{"a", "b"}); !errors.As(err, &ue) || len(ue.Paths) != 1 || ue.Paths[0] != "b/notes.txt" {
+		t.Fatalf("sparse add over an untracked file: %v", err)
+	}
+	if got := readFrom(t, wc.Root, "b/notes.txt"); got != "my notes" {
+		t.Fatalf("b/notes.txt = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(wc.Root, "b", "y")); err == nil || len(wc.State.Sparse) != 1 {
+		t.Fatal("a refused sparse change changed the working copy")
+	}
+	os.Remove(filepath.Join(wc.Root, "b", "notes.txt"))
+	if err := wc.SetSparse(ctx, sparse.Spec{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFrom(t, wc.Root, "b/notes.txt"); got != "upstream\n" {
+		t.Fatalf("b/notes.txt = %q", got)
 	}
 }

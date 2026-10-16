@@ -85,6 +85,13 @@ func decodeEntries(b []byte) ([]Entry, error) {
 			// hostile tree write outside a working copy.
 			return nil, fmt.Errorf("tree: invalid entry name %q", e.Name)
 		}
+		if len(es) > 0 && e.Name <= es[len(es)-1].Name {
+			// Entries are always written sorted (SortEntries). A repeated
+			// name could make a checkout replace a directory with a symlink
+			// and then write through it; lookups and tree diffs need the
+			// order too.
+			return nil, fmt.Errorf("tree: entry %q is out of order or repeated", e.Name)
+		}
 		copy(e.ID[:], b[nul+1:nul+1+IDSize])
 		es = append(es, e)
 		b = b[nul+1+IDSize:]
