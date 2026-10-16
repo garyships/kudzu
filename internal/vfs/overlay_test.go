@@ -127,6 +127,13 @@ func TestOverlayEditsAndCommit(t *testing.T) {
 	if _, err := o.OpenWrite(ctx, ".kudzu/x", true, false, false, false); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("creating a reserved path = %v", err)
 	}
+	// Commit and update empty the overlay, so a nested .git, which no
+	// changeset could hold, would be lost: it cannot be made at all.
+	for _, d := range []string{".git", "services/.GIT"} {
+		if err := o.Mkdir(ctx, d); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("mkdir %s = %v", d, err)
+		}
+	}
 
 	if got := names(t, o, ""); got != "link notes services tools vendor" {
 		t.Fatalf("root = %s", got)
