@@ -72,7 +72,7 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | `kudzu show [REV]` | `--json` | Changeset header, `seq` and root tree, then `<mode> <blob> <path>` (or `D <path>`) for each change. |
 | `kudzu cat PATH` | `-r REV` | Raw file content. |
 | `kudzu ls [DIR]` | `-r REV`, `--json` | `<mode> <id> <name>`; directories end with `/`. |
-| `kudzu refs` | `--json` | `<changeset> <name>` for each ref. |
+| `kudzu refs` | `--json` | `<changeset> <name>` for each ref, sorted by name. |
 | `kudzu merge-base A B` | `--json` | The merge base ID. Without `--json`, no common ancestor is an error; with it, `merge_base` is `""`. |
 
 ### Working copy

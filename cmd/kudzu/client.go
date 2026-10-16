@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"sort"
 	"strings"
 	"time"
 
@@ -674,8 +675,13 @@ func cmdRefs(ctx context.Context, args []string) error {
 	if done, err := query(ctx, rem, "/api/refs", nil, &refs); err != nil || done {
 		return err
 	}
-	for name, id := range refs {
-		fmt.Printf("%s %s\n", id.Short(), name)
+	names := make([]string, 0, len(refs))
+	for name := range refs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("%s %s\n", refs[name].Short(), name)
 	}
 	return nil
 }
