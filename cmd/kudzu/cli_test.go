@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -220,6 +221,29 @@ func TestMCPCommand(t *testing.T) {
 	outW.Close()
 	if len(got) != 2 || !strings.Contains(got[0], `"name":"kudzu"`) || !strings.Contains(got[1], `hello\n`) {
 		t.Fatalf("responses = %q", got)
+	}
+}
+
+// kudzu refs lists refs by name, not in the random order of a Go map.
+func TestRefsSorted(t *testing.T) {
+	r := startServer(t)
+	ctx := context.Background()
+	tip, err := r.Meta.GetRef(ctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 20; i >= 1; i-- {
+		if err := r.Meta.CASRef(ctx, fmt.Sprintf("agent/%02d", i), object.Zero, tip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want []string
+	for i := 1; i <= 20; i++ {
+		want = append(want, fmt.Sprintf("%s agent/%02d", tip.Short(), i))
+	}
+	want = append(want, tip.Short()+" main")
+	if got := run(t, cmdRefs); got != strings.Join(want, "\n")+"\n" {
+		t.Fatalf("refs printed\n%s\nwant\n%s", got, strings.Join(want, "\n"))
 	}
 }
 

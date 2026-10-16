@@ -50,6 +50,8 @@ SQLite 的表结构：
 
 创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
 
+对象总是先于引用它们的元数据写入，所以服务端的对象必须扛得住断电。它的对象目录（`store.OpenDurableFS`）按批落盘：`Put` 只记下新写的对象，仓库在追加 changeset 或存派生数据之前调用 `store.Sync`，保证元数据引用的东西都已经在盘上。Linux 上一次 `syncfs(2)` 就能覆盖整批；其他平台逐个 fsync 记下的文件，再 fsync 它们的分片目录。这样每个 changeset 只同步一次，而不是每个对象两次，大规模导入的速度和完全不同步差不多。缓存和工作副本不做这些同步，丢了的对象再取一次就行。所有对象目录都把空文件当作不存在（存储形式的对象至少有两个字节的头部，空文件只可能是崩溃时没落盘的写入留下的），这样对象会被重新获取或上传，而不是以空内容返回。
+
 ### 多台服务端（`--meta`、`--objects`）
 
 默认配置下只有一个权威服务端进程。`kudzu server --meta postgres://… --objects s3://bucket/prefix` 把两种存储都放到共享服务里，于是可以在负载均衡后面跑任意多台无状态服务端，正是文章的设计：
@@ -68,7 +70,7 @@ CAS 竞争失败后重试的 land、遇到冲突的 rebase、从没 land 的提�
 
 日志的位置永远不变：被删的条目在 `seq` 里留下空洞，`/api/wal` 的读者自然跳过，`since` 游标依然有效。用墓碑只会让日志无谓地增长。
 
-gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；重新追加的 changeset 会刷新 `created`；清除前会再检查一次每个候选对象的时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
+gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；changeset 被重新追加、被新 changeset 当作父节点、或者有 ref 移到它上面时，都会刷新 `created`。gc 扫完对象后，会再从 ref 和期间新追加的 changeset 标记一遍；删除 changeset 时先子后父，且只删仍然过期的，被 touch 过的会保留，连同它的祖先和它们需要的对象。对象删除前先移到一边、再检查一次时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
 
 ## 3. 派生数据引擎（`internal/repo/derive.go`）
 
@@ -157,9 +159,10 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 - **sparse 规则**（`internal/sparse`，和 git 的 cone mode 一样）：选中的目录下所有内容，加上它各级祖先目录里直接放着的文件
 - **clone**：按层批量拉 tree，最后批量拉 blob。blob 从拉取流里出来后，在 worker 池里校验哈希并直接写成工作区文件，不会先落盘再读回来
-- **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰
+- **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰。缓存总大小在第一次写入需要它时才统计，而不是打开时就统计，所以只读的命令（`log`、`status`）不管缓存涨到多大都一样快；每个命令最多打开一次工作副本
 - **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小
-- **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希
+- **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希。被忽略的目录直接跳过，除非里面有被跟踪的文件；判断时查的是每次运行只建一次的"含跟踪文件的目录"集合
+- **所有权**：命令从当前目录往上找 `.kudzu` 目录，只有它属于当前用户时才使用（和 git 的 "dubious ownership" 规则一样），所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。`KUDZU_SAFE_DIRECTORY` 可以绕过这个检查
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
 
 ### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）

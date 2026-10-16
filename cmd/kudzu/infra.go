@@ -86,7 +86,7 @@ func (sf storeFlags) open(ctx context.Context, memBytes int64, mustExist bool) (
 			return nil, nil, err
 		}
 	} else {
-		fs, err := store.OpenFS(filepath.Join(*sf.dir, "objects"), 0)
+		fs, err := store.OpenDurableFS(filepath.Join(*sf.dir, "objects"))
 		if err != nil {
 			meta.Close()
 			return nil, nil, err
@@ -105,7 +105,7 @@ func openRepo(dir string, memBytes int64) (*repo.Repo, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	objs, err := store.OpenFS(filepath.Join(dir, "objects"), 0)
+	objs, err := store.OpenDurableFS(filepath.Join(dir, "objects"))
 	if err != nil {
 		meta.Close()
 		return nil, nil, err

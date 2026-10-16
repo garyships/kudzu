@@ -50,6 +50,8 @@ SQLite tables:
 
 Creating a changeset is one insert (an upsert that refreshes `created` if the changeset already exists): no locks, no cross-server coordination, no refs touched.
 
+Objects are written before the metadata that names them, so the server's must survive a power loss. Its object directory (`store.OpenDurableFS`) makes them durable in batches: `Put` only records each new object, and the repository calls `store.Sync` before it appends a changeset or stores a derived value, so everything the metadata names is on disk first. On Linux one `syncfs(2)` covers the whole batch; elsewhere each recorded file is fsynced, then its shard directory. That is one sync per changeset rather than two per object, which keeps a large import about as fast as with no syncing at all. Caches and working copies skip the syncs, since an object they lose is simply fetched again. Every object directory treats an empty file as missing (a stored object always has a two-byte header; an empty file is what a crash leaves of a write that never reached the disk), so the object is fetched or uploaded again instead of being served empty.
+
 ### Several servers (`--meta`, `--objects`)
 
 With the local defaults there is one authoritative server process. `kudzu server --meta postgres://… --objects s3://bucket/prefix` keeps both roles in shared services instead, so any number of stateless servers can run behind a load balancer, as the post intends:
@@ -68,7 +70,7 @@ A land that loses its compare-and-swap race, a rebase that hits a conflict, and 
 
 The log stays append-only in the sense that matters: positions never change. Removed entries leave gaps in `seq`, which `/api/wal` readers skip without noticing, so a reader's `since` cursor stays valid. Tombstones would keep growing the log for no reader's benefit.
 
-gc can run while the server is up. The grace period carries that: the server *touches* (bumps the mtime of) every object it tells a client it already has (`/objects/missing`) and every existing object a new changeset reuses, re-appending a changeset refreshes its `created`, and the sweep re-checks each candidate's age right before deleting it. Create checks parents against the log, not a cache, so nothing can be built on a changeset gc removed. A grace period well above the server's touch interval (10 minutes) is required for this; use `--keep 0s` only on an idle store. `--dry-run` reports what would go.
+gc can run while the server is up. The grace period carries that: the server *touches* (bumps the mtime of) every object it tells a client it already has (`/objects/missing`) and every existing object a new changeset reuses, and it touches a changeset (refreshes its `created`) when it is re-appended, when a new changeset names it as a parent, and when a ref moves onto it. After walking the objects, gc marks again from refs and from changesets appended meanwhile. It then deletes changesets children first, each only if it is still old; one that something touched survives, and with it its ancestors and the objects they need. Objects are moved aside and their age checked once more before they are removed. Create checks parents against the log, not a cache, so nothing can be built on a changeset gc removed. A grace period well above the server's touch interval (10 minutes) is required for this; use `--keep 0s` only on an idle store. `--dry-run` reports what would go.
 
 ## 3. The derived-data engine (`internal/repo/derive.go`)
 
@@ -157,9 +159,10 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 
 - **Sparse rules** (`internal/sparse`, same as git's cone mode): everything under a chosen directory, plus the files directly inside each of its ancestors.
 - **Clone** fetches trees level by level, then blobs in batches. Blobs coming off the stream are verified and written straight into the working copy on a worker pool; nothing is written to disk and read back.
-- **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects.
+- **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects. Its size is totalled the first time a write needs it rather than on open, so a command that only reads (`log`, `status`) costs the same however large the cache has grown; each command opens the working copy at most once.
 - **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference.
-- **Status** trusts files whose size and mtime match the index, and hashes the rest.
+- **Status** trusts files whose size and mtime match the index, and hashes the rest. It skips ignored directories unless they hold tracked files, checked against a set of tracked directories built once per run.
+- **Ownership.** Commands find the working copy by walking up to a `.kudzu` directory, and use it only if it belongs to the current user (git's "dubious ownership" rule), so a `.kudzu` planted in a shared directory cannot point them, and the token they send, at another server. `KUDZU_SAFE_DIRECTORY` overrides it.
 - **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
 
 ### Virtualized checkout (`internal/vfs`, `internal/fusefs`)

@@ -18,6 +18,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 - **Remote address**: `host:port`, `http(s)://host:port` or `unix:///path/to.sock`. Resolution: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote.
 - **Author**: `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - **Token**: when the server runs with `--auth`, every client (CLI, MCP server, working copy, tier) sends `$KUDZU_TOKEN` as a bearer token. Tokens are never written to disk.
+- **Working copy ownership**: commands use the working copy found by walking up from the current directory only if its `.kudzu` directory belongs to you (as git does for `.git`), so one planted in a shared directory cannot redirect them or your token. `KUDZU_SAFE_DIRECTORY=PATH` (or `*`) trusts a working copy anyway; root may use the working copy of the user it runs for under sudo.
 
 ## Install and run
 
@@ -72,7 +73,7 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | `kudzu show [REV]` | `--json` | Changeset header, `seq` and root tree, then `<mode> <blob> <path>` (or `D <path>`) for each change. |
 | `kudzu cat PATH` | `-r REV` | Raw file content. |
 | `kudzu ls [DIR]` | `-r REV`, `--json` | `<mode> <id> <name>`; directories end with `/`. |
-| `kudzu refs` | `--json` | `<changeset> <name>` for each ref. |
+| `kudzu refs` | `--json` | `<changeset> <name>` for each ref, sorted by name. |
 | `kudzu merge-base A B` | `--json` | The merge base ID. Without `--json`, no common ancestor is an error; with it, `merge_base` is `""`. |
 
 ### Working copy

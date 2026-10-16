@@ -31,12 +31,18 @@ type Meta interface {
 	// before cutoff (unix seconds) and returns how many it removed. The log
 	// keeps its positions: later entries are not renumbered.
 	DeleteChangesets(ctx context.Context, ids []object.ID, cutoff int64) (int, error)
+	// TouchChangeset marks a changeset as in use by refreshing its Created
+	// time (at most once per touch interval), so that garbage collection
+	// keeps it. It returns ErrNotFound if the changeset is not in the log.
+	// Creating a child of a changeset touches it.
+	TouchChangeset(ctx context.Context, id object.ID) error
 
 	GetRef(ctx context.Context, name string) (object.ID, error)
 	ListRefs(ctx context.Context) (map[string]object.ID, error)
 	// CASRef moves name from old to new. A zero old means the ref must not
 	// exist; a zero new deletes it. It returns ErrConflict if name no longer
-	// points at old.
+	// points at old. A non-zero new must be in the log (ErrNotFound
+	// otherwise) and is touched first, so garbage collection keeps it.
 	CASRef(ctx context.Context, name string, old, new object.ID) error
 
 	GetDerived(ctx context.Context, kind string, key object.ID) ([]byte, error)
@@ -271,7 +277,29 @@ func (s *SQLite) ListRefs(ctx context.Context) (map[string]object.ID, error) {
 	return out, rows.Err()
 }
 
+func (s *SQLite) TouchChangeset(ctx context.Context, id object.ID) error {
+	now := time.Now().Unix()
+	res, err := s.db.ExecContext(ctx, `UPDATE changesets SET created = ? WHERE id = ? AND created < ?`, now, id[:], now-touchSeconds)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
+	}
+	var one int
+	err = s.db.QueryRowContext(ctx, `SELECT 1 FROM changesets WHERE id = ?`, id[:]).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (s *SQLite) CASRef(ctx context.Context, name string, old, new object.ID) error {
+	if !new.IsZero() {
+		if err := s.TouchChangeset(ctx, new); err != nil {
+			return err
+		}
+	}
 	var res sql.Result
 	var err error
 	switch {

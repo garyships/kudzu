@@ -64,6 +64,9 @@ func Open(dir string) (*WC, error) {
 	}
 	for d := abs; ; d = filepath.Dir(d) {
 		if st, err := os.Stat(filepath.Join(d, metaDir)); err == nil && st.IsDir() {
+			if err := checkOwner(d, st); err != nil {
+				return nil, err
+			}
 			return load(d)
 		}
 		if filepath.Dir(d) == d {
