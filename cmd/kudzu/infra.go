@@ -361,7 +361,9 @@ func cmdSnapshot(ctx context.Context, args []string) error {
 		err = cerr
 	}
 	if err != nil {
-		return err
+		// A daemon seeded from a partial snapshot would not know it.
+		os.Remove(*out)
+		return fmt.Errorf("snapshot of %s not written: %w", *rev, err)
 	}
 	fmt.Printf("wrote %s (%.1f MB)\n", *out, float64(n)/(1<<20))
 	return nil

@@ -2,11 +2,15 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"testing"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/garyships/kudzu/internal/repo"
 	"github.com/garyships/kudzu/internal/store"
 	"github.com/garyships/kudzu/internal/store/storetest"
+	"github.com/garyships/kudzu/internal/tier"
 )
 
 func newTestServer(t *testing.T, objs store.Objects) (*repo.Repo, *httptest.Server) {
@@ -82,5 +87,74 @@ func TestUploadDecompressionBomb(t *testing.T) {
 	}
 	if ok, _ := objs.Has(t.Context(), id); !ok {
 		t.Fatal("valid upload not stored")
+	}
+}
+
+// brokenObjects fails to read one object, like a disk with a bad sector.
+type brokenObjects struct {
+	store.Objects
+	broken object.ID
+}
+
+func (b *brokenObjects) Get(ctx context.Context, id object.ID) ([]byte, error) {
+	if id == b.broken {
+		return nil, errors.New("read error")
+	}
+	return b.Objects.Get(ctx, id)
+}
+
+// TestSnapshotFailureIsAnError: a snapshot that fails partway must not end
+// like a complete one, directly or through a tier, so that seeding from it
+// fails instead of starting a daemon on part of a revision. If the failure
+// comes before anything was sent, the response is an error status; after
+// that, the stream breaks.
+func TestSnapshotFailureIsAnError(t *testing.T) {
+	big := make([]byte, 256<<10) // more than the response buffer
+	rand.Read(big)
+	for _, first := range [][]byte{[]byte("a\n"), big} {
+		ctx := t.Context()
+		objs := &brokenObjects{Objects: store.NewMem(4 << 20)}
+		r, srv := newTestServer(t, objs)
+		var changes []object.Change
+		for i, content := range [][]byte{first, []byte("b\n"), []byte("c\n")} {
+			id, err := r.WriteBlob(ctx, content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes = append(changes, object.Change{Path: string(rune('a' + i)), Mode: object.ModeFile, Blob: id})
+		}
+		c, err := r.Create(ctx, repo.CreateRequest{Author: "a <a@example.com>", Message: "m", Changes: changes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Meta.CASRef(ctx, "main", object.Zero, c.ID); err != nil {
+			t.Fatal(err)
+		}
+		objs.broken = changes[1].Blob
+
+		up, err := proto.Dial(srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cache := httptest.NewServer(tier.New("cache", store.NewMem(1<<20), up, 4).Handler())
+		defer cache.Close()
+		for _, addr := range []string{srv.URL, cache.URL} {
+			rem, err := proto.Dial(addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := rem.Stream(ctx, "/api/snapshot", url.Values{"rev": {"main"}})
+			if err != nil {
+				if len(first) == len(big) || !proto.IsStatus(err, http.StatusInternalServerError) {
+					t.Fatalf("%d-byte first file, from %s: %v", len(first), addr, err)
+				}
+				continue
+			}
+			n, err := tier.New("daemon", store.NewMem(4<<20), rem, 4).Seed(body)
+			body.Close()
+			if err == nil {
+				t.Fatalf("%d-byte first file, from %s: a snapshot with an unreadable object seeded %d objects without error", len(first), addr, n)
+			}
+		}
 	}
 }

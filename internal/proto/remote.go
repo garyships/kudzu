@@ -159,6 +159,9 @@ func (r *Remote) GetRaw(ctx context.Context, path string, q url.Values) ([]byte,
 }
 
 // Stream returns a response body for streaming endpoints (e.g. snapshots).
+// A server that fails partway breaks the stream rather than ending it, so
+// reading the body then returns an error such as io.ErrUnexpectedEOF; only
+// io.EOF means the response is complete.
 func (r *Remote) Stream(ctx context.Context, path string, q url.Values) (io.ReadCloser, error) {
 	resp, err := r.do(ctx, "GET", path, q, nil, "")
 	if err != nil {

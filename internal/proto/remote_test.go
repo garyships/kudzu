@@ -1,12 +1,14 @@
 package proto
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -64,6 +66,116 @@ func TestFetchReturnsCallbackError(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), bad.Short()) && !errors.Is(err, errDisk) {
 			t.Fatalf("error is not fn's: %v", err)
+		}
+	}
+}
+
+type sourceFunc func(ctx context.Context, ids []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error)
+
+func (f sourceFunc) FetchMany(ctx context.Context, ids []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error) {
+	return f(ctx, ids, emit)
+}
+
+// objectServer serves the object protocol from src.
+func objectServer(t *testing.T, src Source) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	RegisterObjectRoutes(mux, src, &Counters{})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func postFetch(t *testing.T, srv *httptest.Server, ids []object.ID) *http.Response {
+	t.Helper()
+	resp, err := http.Post(srv.URL+"/objects/fetch", "application/octet-stream", bytes.NewReader(EncodeIDs(ids)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// TestFetchStreamBreaksOnSourceError: when the source fails after some
+// frames, the client gets those frames and then a broken stream, never a
+// clean end it would take for the whole answer. Before any frame, it gets
+// an error status.
+func TestFetchStreamBreaksOnSourceError(t *testing.T) {
+	a, sa := object.EncodeObject(object.KindBlob, []byte("a"))
+	b, _ := object.EncodeObject(object.KindBlob, []byte("b"))
+	fail := errors.New("disk on fire")
+	srv := objectServer(t, sourceFunc(func(_ context.Context, ids []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error) {
+		if ids[0] == a {
+			if err := emit(a, sa); err != nil {
+				return nil, err
+			}
+		}
+		return nil, fail
+	}))
+
+	fr := NewFrameReader(postFetch(t, srv, []object.ID{a, b}).Body)
+	if id, data, _, err := fr.Next(); err != nil || id != a || !bytes.Equal(data, sa) {
+		t.Fatalf("first frame: %s %v", id.Short(), err)
+	}
+	if _, _, _, err := fr.Next(); err == nil || err == io.EOF {
+		t.Fatalf("after the source failed: %v, want a broken stream", err)
+	}
+
+	resp := postFetch(t, srv, []object.ID{b})
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), fail.Error()) {
+		t.Fatalf("failure before any frame: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestFetchResumesAfterBrokenStream: the client keeps the frames that
+// arrived before a stream broke and asks again for only the rest.
+func TestFetchResumesAfterBrokenStream(t *testing.T) {
+	objs := map[object.ID][]byte{}
+	var ids []object.ID
+	for _, s := range []string{"a", "b", "c"} {
+		id, stored := object.EncodeObject(object.KindBlob, []byte(s))
+		objs[id] = stored
+		ids = append(ids, id)
+	}
+	var mu sync.Mutex
+	var requests [][]object.ID
+	srv := objectServer(t, sourceFunc(func(_ context.Context, want []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error) {
+		mu.Lock()
+		requests = append(requests, want)
+		first := len(requests) == 1
+		mu.Unlock()
+		for i, id := range want {
+			if first && i == 1 {
+				return nil, errors.New("upstream went away")
+			}
+			if err := emit(id, objs[id]); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}))
+	r, err := Dial(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[object.ID]int{}
+	missing, err := r.Fetch(context.Background(), ids, func(id object.ID, b []byte) error {
+		got[id]++
+		_, _, err := object.Verify(id, b)
+		return err
+	})
+	if err != nil || len(missing) != 0 || len(got) != 3 {
+		t.Fatalf("fetch: got %d objects, missing %d, err %v", len(got), len(missing), err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 || len(requests[1]) != 2 || requests[1][0] != ids[1] {
+		t.Fatalf("requests: %v", requests)
+	}
+	for id, n := range got {
+		if n != 1 {
+			t.Fatalf("object %s delivered %d times", id.Short(), n)
 		}
 	}
 }

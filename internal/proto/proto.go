@@ -187,15 +187,24 @@ func RegisterObjectRoutes(mux *http.ServeMux, src Source, c *Counters) {
 		}
 		w.Header().Set("Content-Type", "application/x-kudzu-frames")
 		bw := bufio.NewWriterSize(w, 1<<16)
+		sent := 0
 		missing, err := src.FetchMany(req.Context(), ids, func(id object.ID, b []byte) error {
 			c.ObjectsServed.Add(1)
 			c.BytesServed.Add(int64(len(b)))
+			sent++
 			return WriteFrame(bw, id, b)
 		})
-		if err != nil {
-			// Frames already sent stay valid; the client re-asks for the rest.
-			bw.Flush()
+		if err != nil && sent == 0 {
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
+		}
+		if err != nil {
+			// Frames already sent stay valid; the client re-asks for the
+			// rest. A clean end would look like success, so send what is
+			// complete and break the stream.
+			bw.Flush()
+			http.NewResponseController(w).Flush()
+			panic(http.ErrAbortHandler)
 		}
 		for _, id := range missing {
 			WriteMissing(bw, id)

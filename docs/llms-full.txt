@@ -244,7 +244,7 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 - An object's content is at most 1 GiB (2^30 bytes), so a stored object is at most 2^30 + 2 bytes. Larger files cannot be committed; frames claiming more are rejected.
 - `GET /objects/{id}` → one stored object (`Cache-Control: immutable`).
 - `POST /objects/fetch`: the body is concatenated raw 32-byte IDs (at most 65536). The response is a stream of frames.
-- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive.
+- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive. A tier that fails partway sends the frames it has and then aborts the response, so a frame stream (here or from `/api/snapshot`) that ends cleanly is complete; one that breaks off is not.
 - Tree content: entries sorted by name, each `<octal mode> <name>\0<32-byte id>`.
 
 ### API-only write, step by step
