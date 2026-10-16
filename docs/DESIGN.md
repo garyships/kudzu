@@ -161,7 +161,7 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 - **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects.
 - **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference. Before changing anything it refuses if an untracked file, ignored or not, is where the new revision puts a file or needs a directory; `--force` discards such files along with local edits. `kudzu sparse` refuses the same way and never forces.
 - **Status** trusts files whose size and mtime match the index, and hashes the rest. A nested git checkout's `.git` is ignored, since no changeset may contain it.
-- **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
+- **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns. The index keeps each committed file's size and mtime from just before it was read, so an edit made while the commit is in flight still shows as modified.
 
 ### Virtualized checkout (`internal/vfs`, `internal/fusefs`)
 

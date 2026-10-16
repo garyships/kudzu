@@ -32,6 +32,9 @@ func (w *WC) Commit(ctx context.Context, message, author string, addUntracked bo
 	}
 	var changes []object.Change
 	uploads := map[object.ID][]byte{}
+	// The index gets each file's stat from just before it was read, so an
+	// edit made while the commit is in flight still shows up in status.
+	stats := map[string]IndexEntry{}
 	for _, f := range st {
 		switch f.Code {
 		case 'D':
@@ -42,7 +45,12 @@ func (w *WC) Commit(ctx context.Context, message, author string, addUntracked bo
 			}
 			fallthrough
 		case 'M':
-			content, err := readContent(w.abs(f.Path), f.Mode)
+			full := w.abs(f.Path)
+			before, err := os.Lstat(full)
+			if err != nil {
+				return nil, err
+			}
+			content, err := readContent(full, f.Mode)
 			if err != nil {
 				return nil, err
 			}
@@ -52,6 +60,11 @@ func (w *WC) Commit(ctx context.Context, message, author string, addUntracked bo
 				return nil, err
 			}
 			changes = append(changes, object.Change{Path: f.Path, Mode: f.Mode, Blob: id})
+			ie := IndexEntry{Mode: f.Mode, Blob: id, Size: before.Size(), MtimeNs: before.ModTime().UnixNano()}
+			if after, err := os.Lstat(full); err != nil || after.Size() != ie.Size || after.ModTime().UnixNano() != ie.MtimeNs {
+				ie.MtimeNs = -1 // changed while being read: make status hash it again
+			}
+			stats[f.Path] = ie
 		}
 	}
 	if len(changes) == 0 {
@@ -91,13 +104,9 @@ func (w *WC) Commit(ctx context.Context, message, author string, addUntracked bo
 	for _, ch := range changes {
 		if ch.Deleted() {
 			delete(w.Index, ch.Path)
-			continue
+		} else {
+			w.Index[ch.Path] = stats[ch.Path]
 		}
-		info, err := os.Lstat(w.abs(ch.Path))
-		if err != nil {
-			return nil, err
-		}
-		w.Index[ch.Path] = IndexEntry{Mode: ch.Mode, Blob: ch.Blob, Size: info.Size(), MtimeNs: info.ModTime().UnixNano()}
 	}
 	w.State.Changeset, w.State.Tree = resp.ID, resp.Tree
 	if err := w.Save(); err != nil {

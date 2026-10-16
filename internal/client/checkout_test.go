@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -395,5 +396,45 @@ func TestSetSparseKeepsUntrackedFiles(t *testing.T) {
 	}
 	if got := readFrom(t, wc.Root, "b/notes.txt"); got != "upstream\n" {
 		t.Fatalf("b/notes.txt = %q", got)
+	}
+}
+
+// Commit used to stat files after the server round trip, so an edit made
+// while the commit was in flight was recorded as clean and never committed.
+func TestCommitKeepsEditMadeDuringCommit(t *testing.T) {
+	var editRoot atomic.Value // the working copy to edit while a commit is in flight
+	editRoot.Store("")
+	r, remote := newServer(t, func(w http.ResponseWriter, req *http.Request) {
+		if root := editRoot.Load().(string); root != "" && req.Method == "POST" && req.URL.Path == "/api/changesets" {
+			time.Sleep(20 * time.Millisecond) // a new mtime, even on coarse clocks
+			writeTo(t, root, "f.txt", "v3, edited during the commit\n")
+		}
+	})
+	commit(t, r, object.Zero, map[string]string{"f.txt": "v1\n"})
+	wc := clone(t, remote, nil)
+	writeTo(t, wc.Root, "f.txt", "v2\n")
+	ctx := context.Background()
+	editRoot.Store(wc.Root)
+	if _, err := wc.Commit(ctx, "m", "a", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	editRoot.Store("")
+	st, err := wc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st) != 1 || st[0].Path != "f.txt" || st[0].Code != 'M' {
+		t.Fatalf("the edit made during the commit is not in status: %+v", st)
+	}
+	res, err := wc.Commit(ctx, "m2", "a", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := r.ReadTree(ctx, res.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := tree.Lookup("f.txt"); e.ID != object.Hash(object.KindBlob, []byte("v3, edited during the commit\n")) {
+		t.Fatal("the next commit does not hold the edit")
 	}
 }
