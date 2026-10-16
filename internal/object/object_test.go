@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"encoding/binary"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,44 @@ func TestEncodeRoundTrip(t *testing.T) {
 		stored[len(stored)-1] ^= 1
 		if _, _, err := Verify(id, stored); err == nil {
 			t.Fatal("corruption not detected")
+		}
+	}
+}
+
+// sourceBlob is about 3 KB of compressible source code.
+var sourceBlob = bytes.Repeat([]byte("package main\n\nfunc main() { println(\"hello\") }\n"), 60)
+
+// TestDecodeReusesReaders: decoding a compressed blob allocates about its
+// content, not a new zlib reader (~40 KB, mostly its window) every time.
+func TestDecodeReusesReaders(t *testing.T) {
+	stored := Encode(KindBlob, sourceBlob)
+	if stored[1] != codecZlib {
+		t.Fatal("test blob was not compressed")
+	}
+	const runs = 1000
+	Decode(stored)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < runs; i++ {
+		if _, _, err := Decode(stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	// About 7.5 KB; the race detector makes sync.Pool drop a quarter of
+	// what is put back, which brings it to about 20 KB.
+	if per := (after.TotalAlloc - before.TotalAlloc) / runs; per > 32<<10 {
+		t.Fatalf("Decode allocated %d bytes per %d-byte blob", per, len(sourceBlob))
+	}
+}
+
+func BenchmarkDecode(b *testing.B) {
+	stored := Encode(KindBlob, sourceBlob)
+	b.SetBytes(int64(len(sourceBlob)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := Decode(stored); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

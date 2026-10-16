@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"sync"
 )
@@ -140,15 +141,73 @@ func Decode(stored []byte) (Kind, []byte, error) {
 	case codecRaw:
 		return kind, stored[2:], nil
 	case codecZlib:
-		zr, err := zlib.NewReader(bytes.NewReader(stored[2:]))
+		b, err := inflate(stored[2:])
 		if err != nil {
 			return 0, nil, err
 		}
-		defer zr.Close()
-		b, err := io.ReadAll(zr)
-		return kind, b, err
+		return kind, b, nil
 	}
 	return 0, nil, fmt.Errorf("unknown object codec %d", stored[1])
+}
+
+// An inflater is a zlib reader kept with the bytes.Reader it reads from.
+// Decode runs for every object a clone verifies and every blob blame, diff
+// or cat reads; a fresh zlib reader allocates tens of kilobytes, so they
+// are pooled like the writers.
+type inflater struct {
+	br bytes.Reader
+	zr io.ReadCloser
+}
+
+var inflaters sync.Pool
+
+func getInflater(payload []byte) (*inflater, error) {
+	f, _ := inflaters.Get().(*inflater)
+	if f == nil {
+		f = new(inflater)
+	}
+	f.br.Reset(payload)
+	var err error
+	if f.zr == nil {
+		f.zr, err = zlib.NewReader(&f.br)
+	} else {
+		err = f.zr.(zlib.Resetter).Reset(&f.br, nil)
+	}
+	if err != nil {
+		putInflater(f)
+		return nil, err
+	}
+	return f, nil
+}
+
+func putInflater(f *inflater) {
+	f.br.Reset(nil) // don't keep the payload alive from the pool
+	inflaters.Put(f)
+}
+
+// inflate decompresses a zlib payload. Blobs typically shrink 3-4x, so the
+// buffer starts at that guess (capped, so that a large blob that barely
+// compressed does not carry much slack) and doubles from there.
+func inflate(payload []byte) ([]byte, error) {
+	f, err := getInflater(payload)
+	if err != nil {
+		return nil, err
+	}
+	defer putInflater(f)
+	b := make([]byte, 0, min(4*len(payload), 1<<20)+bytes.MinRead)
+	for {
+		if len(b) == cap(b) {
+			b = slices.Grow(b, cap(b))
+		}
+		n, err := f.zr.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if err == io.EOF {
+			return b, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }
 
 // Verify decodes a stored object and checks that it hashes to id.
