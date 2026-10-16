@@ -175,3 +175,41 @@ func TestValidatePath(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckAroundInMemoryLimit: content just under and just over the size
+// Check hashes in memory verifies either way, and a wrong ID fails either way.
+func TestCheckAroundInMemoryLimit(t *testing.T) {
+	for _, n := range []int{checkInMemory - 1, checkInMemory, checkInMemory + 1} {
+		content := bytes.Repeat([]byte{'k'}, n)
+		content[n/2] = 'z'
+		id, stored := EncodeObject(KindBlob, content)
+		if kind, err := Check(id, stored); err != nil || kind != KindBlob {
+			t.Fatalf("%d bytes: %v %v", n, kind, err)
+		}
+		if _, err := Check(Hash(KindBlob, content[1:]), stored); err == nil {
+			t.Fatalf("%d bytes: wrong ID accepted", n)
+		}
+	}
+}
+
+func BenchmarkCheck(b *testing.B) {
+	id, stored := EncodeObject(KindBlob, sourceBlob)
+	b.SetBytes(int64(len(sourceBlob)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := Check(id, stored); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkVerify(b *testing.B) {
+	id, stored := EncodeObject(KindBlob, sourceBlob)
+	b.SetBytes(int64(len(sourceBlob)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := Verify(id, stored); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

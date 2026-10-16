@@ -172,9 +172,14 @@ func decode(stored []byte, limit int) (Kind, []byte, error) {
 	return 0, nil, fmt.Errorf("unknown object codec %d", stored[1])
 }
 
-func tooLarge(limit int) error {
-	return fmt.Errorf("object content is larger than %d bytes", limit)
+// tooLargeError reports content over a decode limit.
+type tooLargeError int
+
+func (e tooLargeError) Error() string {
+	return fmt.Sprintf("object content is larger than %d bytes", int(e))
 }
+
+func tooLarge(limit int) error { return tooLargeError(limit) }
 
 // An inflater is a zlib reader kept with the bytes.Reader it reads from.
 // Decode runs for every object a clone verifies and every blob blame, diff
@@ -268,13 +273,18 @@ func verify(id ID, stored []byte, limit int) (Kind, []byte, error) {
 }
 
 // Check is Verify for callers that only store or forward the object, such
-// as the server taking an upload or a cache filling a miss. It never holds
-// the content: a compressed payload is decompressed twice, once to count
-// the bytes that the hash header needs and once into the hash, so a payload
-// that inflates to MaxSize costs CPU but not memory.
+// as the server taking an upload or a cache filling a miss. It holds at most
+// checkInMemory bytes of content: larger content is decompressed twice, once
+// to count the bytes that the hash header needs and once into the hash, so a
+// payload that inflates to MaxSize costs CPU but not memory.
 func Check(id ID, stored []byte) (Kind, error) {
 	return check(id, stored, MaxSize)
 }
+
+// checkInMemory is the content size up to which Check decompresses once,
+// into memory, and hashes that. Most objects are smaller, and a cache checks
+// every object it fetches; two passes cost them about 45% more time.
+const checkInMemory = 256 << 10
 
 func check(id ID, stored []byte, limit int) (Kind, error) {
 	if len(stored) < 2 || stored[1] != codecZlib {
@@ -283,6 +293,17 @@ func check(id ID, stored []byte, limit int) (Kind, error) {
 		return kind, err
 	}
 	kind := Kind(stored[0])
+	small := min(limit, checkInMemory)
+	content, err := inflate(stored[2:], small)
+	if err == nil {
+		if Hash(kind, content) != id {
+			return 0, fmt.Errorf("object %s: hash mismatch", id.Short())
+		}
+		return kind, nil
+	}
+	if _, over := err.(tooLargeError); !over || small == limit {
+		return 0, fmt.Errorf("object %s: %w", id.Short(), err)
+	}
 	n, err := inflateTo(io.Discard, stored[2:], int64(limit)+1)
 	if err == nil && n > int64(limit) {
 		err = tooLarge(limit)
