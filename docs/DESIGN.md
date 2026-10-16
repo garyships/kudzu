@@ -162,6 +162,7 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 - **Local cache**: trees are always cached in `.kudzu/objects`. Blobs are cached only when the remote is not a local daemon, since the daemon already caches them for every job on the machine (`State.CacheBlobs`). The cache is size-bounded and evicts least recently used objects. Its size is totalled the first time a write needs it rather than on open, so a command that only reads (`log`, `status`) costs the same however large the cache has grown; each command opens the working copy at most once.
 - **Update** walks the old and new trees together, skipping subtrees with equal hashes, so its cost tracks the size of the difference.
 - **Status** trusts files whose size and mtime match the index, and hashes the rest. It skips ignored directories unless they hold tracked files, checked against a set of tracked directories built once per run.
+- **Ownership.** Commands find the working copy by walking up to a `.kudzu` directory, and use it only if it belongs to the current user (git's "dubious ownership" rule), so a `.kudzu` planted in a shared directory cannot point them, and the token they send, at another server. `KUDZU_SAFE_DIRECTORY` overrides it.
 - **Commit** asks the server which blobs it lacks, uploads only those, and asks the server to create the changeset. There is no push: the changeset exists on the server as soon as the call returns.
 
 ### Virtualized checkout (`internal/vfs`, `internal/fusefs`)

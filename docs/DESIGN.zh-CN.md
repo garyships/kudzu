@@ -162,6 +162,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰。缓存总大小在第一次写入需要它时才统计，而不是打开时就统计，所以只读的命令（`log`、`status`）不管缓存涨到多大都一样快；每个命令最多打开一次工作副本
 - **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小
 - **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希。被忽略的目录直接跳过，除非里面有被跟踪的文件；判断时查的是每次运行只建一次的"含跟踪文件的目录"集合
+- **所有权**：命令从当前目录往上找 `.kudzu` 目录，只有它属于当前用户时才使用（和 git 的 "dubious ownership" 规则一样），所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。`KUDZU_SAFE_DIRECTORY` 可以绕过这个检查
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步
 
 ### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）
