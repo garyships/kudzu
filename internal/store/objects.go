@@ -73,6 +73,8 @@ func Touch(ctx context.Context, objs Objects, id object.ID) error {
 // its grace period is well above this.
 const touchInterval = 10 * time.Minute
 
+const touchSeconds = int64(touchInterval / time.Second)
+
 // FS stores one file per object under dir/ab/cdef.... When maxBytes > 0 it
 // acts as a bounded cache: least recently used objects are evicted.
 //
@@ -296,10 +298,24 @@ func (s *FS) DeleteIfOlder(_ context.Context, id object.ID, cutoff time.Time) (b
 		return false, 0, nil
 	}
 	s.loadSize() // first, or the total would miss this object twice
-	if err := os.Remove(p); err != nil {
+	// Move the file aside, then check its age again. A Touch racing with us
+	// either refreshed the mtime before the rename, and the file goes back,
+	// or finds it gone and reports it missing, so it is written again;
+	// either way no one is left relying on a deleted object.
+	q := filepath.Join(s.dir, "tmp", "gc-"+id.String())
+	if err := os.Rename(p, q); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, 0, nil
 		}
+		return false, 0, err
+	}
+	if info, err = os.Stat(q); err != nil {
+		return false, 0, err
+	}
+	if !info.ModTime().Before(cutoff) {
+		return false, 0, os.Rename(q, p)
+	}
+	if err := os.Remove(q); err != nil {
 		return false, 0, err
 	}
 	if s.maxBytes > 0 {
