@@ -81,7 +81,7 @@ func (k *kudzu) addReadTools(s *sdk.Server) {
 	}, k.statsTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_wc_status",
-		Description: "List local changes in a Kudzu working copy on this machine: M modified, D deleted, ? untracked. Also reports the checked-out changeset, the remote and the sparse directories.",
+		Description: "List local changes in a Kudzu working copy on this machine: M modified, D deleted, ? untracked. Also reports the checked-out changeset, the remote and the sparse directories. Inside a writable mount (kudzu mount --writable) it lists the mount's changes instead: A added, M modified, D deleted.",
 		Annotations: readOnly("Working copy status"),
 	}, k.wcStatusTool)
 }
