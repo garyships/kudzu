@@ -144,6 +144,8 @@ POST /objects/fetch     body: concatenated 32-byte IDs
 
 Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash without holding the content (`object.Check`): a compressed blob is inflated twice, once to count the length that the hash covers and once into the hash, so a decompression bomb costs CPU but not memory.
 
+Every tier closes keep-alive connections that have been idle for two minutes, but sets no read or write timeout, since uploads, snapshots and lands can rightly take long. Clients (`proto.Dial`) give up on connecting after 30 seconds, on a TLS handshake after 10, and on response headers after 10 minutes, which leaves room for a land or rebase that runs on the server before it answers but keeps a stuck tier from hanging an agent forever.
+
 ## 7. Cache tiers (`internal/tier`)
 
 `kudzu cache` (memory) and `kudzu daemon` (disk, unix socket) are the same code with a different local store:

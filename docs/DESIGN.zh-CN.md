@@ -144,6 +144,8 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 写入方向：`POST /objects/missing` 先问服务端缺哪些 blob，`POST /objects/upload` 只传缺的，服务端逐个校验哈希，校验时不把内容留在内存里（`object.Check`）：压缩的 blob 解压两遍，第一遍只数出哈希头需要的长度，第二遍直接写进哈希。解压炸弹只会消耗 CPU，不会占用内存。
 
+每一层都会关闭空闲超过两分钟的 keep-alive 连接，但不设读写超时，因为上传、快照和 land 本来就可能很久。客户端（`proto.Dial`）建立连接最多等 30 秒，TLS 握手最多 10 秒，等响应头最多 10 分钟：既给服务端先做完 land 或 rebase 再回复留出时间，也不会让卡住的某一层把 agent 永远挂住。
+
 ## 7. 缓存层（`internal/tier`）
 
 `kudzu cache`（内存）和 `kudzu daemon`（磁盘，unix socket）是同一份代码，只是本地存储不同：

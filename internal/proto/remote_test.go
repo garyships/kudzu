@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 )
@@ -38,6 +39,22 @@ func fetchServer(t *testing.T, serve func(w http.ResponseWriter, ids []object.ID
 		t.Fatal(err)
 	}
 	return r, &requests
+}
+
+// TestDialTimeouts: a tier that accepts connections but never answers must
+// not hang its clients forever, but a slow land or rebase must still finish.
+func TestDialTimeouts(t *testing.T) {
+	r, err := Dial("127.0.0.1:7070")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := r.Transport().(*http.Transport)
+	if tr.DialContext == nil || tr.TLSHandshakeTimeout <= 0 {
+		t.Fatal("no dial or TLS handshake timeout")
+	}
+	if d := tr.ResponseHeaderTimeout; d < 5*time.Minute {
+		t.Fatalf("response header timeout %v: none, or too short for a server-side land", d)
+	}
 }
 
 // TestFetchReturnsCallbackError: when fn fails for an object, Fetch fails,

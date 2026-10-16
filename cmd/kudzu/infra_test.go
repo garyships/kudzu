@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"errors"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/repo"
@@ -28,6 +32,42 @@ func (u *unreadable) Get(ctx context.Context, id object.ID) ([]byte, error) {
 		return nil, errors.New("read error")
 	}
 	return u.Objects.Get(ctx, id)
+}
+
+// TestServeClosesIdleConnections: a keep-alive connection that sits idle is
+// closed by the server instead of being held open forever.
+func TestServeClosesIdleConnections(t *testing.T) {
+	defer func(d time.Duration) { idleTimeout = d }(idleTimeout)
+	idleTimeout = 100 * time.Millisecond
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveListener(ctx, l, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
+	}()
+	defer func() { cancel(); <-done }()
+
+	conn, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "GET / HTTP/1.1\r\nHost: kudzu\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("idle connection still open: %v", err)
+	}
 }
 
 // TestSnapshotInterrupted: when the server fails partway through a

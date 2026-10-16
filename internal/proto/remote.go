@@ -40,6 +40,12 @@ func Dial(addr string) (*Remote, error) {
 		MaxIdleConnsPerHost: 64,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true, // objects are already compressed
+
+		// A stuck tier must not hang its clients forever. Headers get
+		// minutes: lands and rebases run on the server before it answers.
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Minute,
 	}
 	r := &Remote{Addr: addr, Token: os.Getenv("KUDZU_TOKEN"), hc: &http.Client{Transport: tr}}
 	if sock, ok := strings.CutPrefix(addr, "unix://"); ok {
