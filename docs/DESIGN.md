@@ -152,6 +152,7 @@ Uploads go the other way: `POST /objects/missing` asks which blobs the server la
 - Everything that isn't an object request (`/api/*`, uploads) is proxied upstream, so all tiers look the same to a client.
 - A daemon can start from a snapshot (`--seed`, produced by `kudzu snapshot`) and then fetch only what changed, as the post's daemons start from a periodically refreshed snapshot.
 - `/stats` reports hit rate, coalesced misses and upstream traffic.
+- Whoever can connect to a tier can use the whole API through it, so a unix socket is created mode 0600 (owner only); `--socket-mode 0660` or `0666` shares a daemon deliberately. The default socket, `/tmp/kudzu.sock`, sits in a directory every user can write to, so whoever binds it first would receive every job's requests. `proto.Dial` therefore refuses, after connecting and before sending anything, a socket in a world-writable directory that is owned by neither the current user nor root (`internal/proto/socket_unix.go`). A shared daemon belongs in a directory that is not world-writable. The daemon's objects default to a per-user directory (`<user cache dir>/kudzu/daemon`, created 0700) rather than a fixed path in the temp directory.
 
 ## 8. Client (`internal/client`)
 

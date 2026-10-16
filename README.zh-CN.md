@@ -110,6 +110,8 @@ kudzu commit -m "api: tweak" --land main  # 在服务端创建 changeset 并合�
 kudzu write -r main -m "bump" --land main VERSION=@./VERSION   # 完全不用工作区
 ```
 
+unix socket 默认只允许创建者自己连接（权限 0600），因为能连上的人就能 land 改动、移动 ref。想让多个用户共用一个 daemon，把 socket 放在不是所有人都可写的目录里，并加上 `--socket-mode 0660`（或 `0666`）。如果 socket 在 `/tmp` 这类所有人都可写的目录里、又属于别的用户，客户端会拒绝连接，因为任何用户都可能抢先创建它。
+
 </details>
 
 ## 实测数据

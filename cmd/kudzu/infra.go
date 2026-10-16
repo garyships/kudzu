@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,20 +116,49 @@ func openRepo(dir string, memBytes int64) (*repo.Repo, func(), error) {
 	return r, func() { meta.Close() }, nil
 }
 
-func listen(addr string) (net.Listener, error) {
+// socketMode is the --socket-mode flag: who may connect to a unix socket a
+// tier listens on. Whoever can connect can use the whole API through it,
+// landing changes and moving refs included, so the default is the owner only.
+type socketMode os.FileMode
+
+func addSocketModeFlag(fs *flag.FlagSet) *socketMode {
+	m := socketMode(0o600)
+	fs.Var(&m, "socket-mode", "permissions of a unix:// listen socket, in octal: 0600 lets only you connect; 0660 or 0666 share the tier with your group or every local user, who can then land changes and move refs through it")
+	return &m
+}
+
+func (m *socketMode) String() string { return fmt.Sprintf("%#o", uint32(*m)) }
+
+func (m *socketMode) Set(s string) error {
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || v > 0o777 {
+		return errors.New("want octal permissions such as 0600, 0660 or 0666")
+	}
+	*m = socketMode(v)
+	return nil
+}
+
+func listen(addr string, mode socketMode) (net.Listener, error) {
 	if sock, ok := strings.CutPrefix(addr, "unix://"); ok {
-		os.Remove(sock)
-		l, err := net.Listen("unix", sock)
-		if err == nil {
-			os.Chmod(sock, 0o666)
+		// A stale socket we cannot remove belongs to someone else.
+		if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
-		return l, err
+		l, err := listenUnix(sock, os.FileMode(mode))
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(sock, os.FileMode(mode)); err != nil && runtime.GOOS != "windows" {
+			l.Close()
+			return nil, err
+		}
+		return l, nil
 	}
 	return net.Listen("tcp", addr)
 }
 
-func serve(ctx context.Context, addr string, h http.Handler, logger *log.Logger) error {
-	l, err := listen(addr)
+func serve(ctx context.Context, addr string, mode socketMode, h http.Handler, logger *log.Logger) error {
+	l, err := listen(addr, mode)
 	if err != nil {
 		return err
 	}
@@ -153,6 +184,7 @@ func cmdServer(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	stores := addStoreFlags(fs, "kudzu-data")
 	addr := fs.String("listen", "127.0.0.1:7070", "listen address (host:port or unix:///path)")
+	sockMode := addSocketModeFlag(fs)
 	mem := fs.String("mem", "512MB", "in-memory object cache size")
 	lazy := fs.String("lazy", "", "comma-separated derived types to compute lazily (gen, unode)")
 	authFile := fs.String("auth", "", "access policy file: require bearer tokens and enforce per-directory rules (see 'kudzu token')")
@@ -194,7 +226,7 @@ func cmdServer(ctx context.Context, args []string) error {
 	if policy != nil {
 		logger.Printf("enforcing access policy %s", *authFile)
 	}
-	return serve(ctx, *addr, srv.Handler(), logger)
+	return serve(ctx, *addr, *sockMode, srv.Handler(), logger)
 }
 
 // cmdToken prints a new random token and the line to add to a policy file.
@@ -215,7 +247,7 @@ func cmdToken(ctx context.Context, args []string) error {
 	return nil
 }
 
-func runTier(ctx context.Context, name, addr, upstream string, local store.Objects, concurrency int, seed string) error {
+func runTier(ctx context.Context, name, addr string, mode socketMode, upstream string, local store.Objects, concurrency int, seed string) error {
 	up, err := proto.Dial(upstream)
 	if err != nil {
 		return err
@@ -236,12 +268,13 @@ func runTier(ctx context.Context, name, addr, upstream string, local store.Objec
 		logger.Printf("seeded %d objects from %s in %s", n, seed, time.Since(start).Round(time.Millisecond))
 	}
 	logger.Printf("upstream %s", upstream)
-	return serve(ctx, addr, t.Handler(), logger)
+	return serve(ctx, addr, mode, t.Handler(), logger)
 }
 
 func cmdCache(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("cache", flag.ContinueOnError)
 	addr := fs.String("listen", "127.0.0.1:7071", "listen address")
+	sockMode := addSocketModeFlag(fs)
 	upstream := fs.String("upstream", "127.0.0.1:7070", "upstream tier (normally the server)")
 	mem := fs.String("mem", "1GB", "memory budget for cached objects")
 	conc := fs.Int("upstream-concurrency", 32, "max in-flight upstream requests")
@@ -252,14 +285,25 @@ func cmdCache(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return runTier(ctx, "cache", *addr, *upstream, store.NewMem(memBytes), *conc, "")
+	return runTier(ctx, "cache", *addr, *sockMode, *upstream, store.NewMem(memBytes), *conc, "")
+}
+
+// daemonDir is the node daemon's default object directory. It is per user,
+// like the socket, rather than a fixed path in the shared temp directory.
+func daemonDir() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "kudzu", "daemon")
 }
 
 func cmdDaemon(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	addr := fs.String("listen", "unix:///tmp/kudzu.sock", "listen address (unix:///path or host:port)")
+	sockMode := addSocketModeFlag(fs)
 	upstream := fs.String("upstream", "127.0.0.1:7071", "upstream tier (normally the regional cache)")
-	dir := fs.String("dir", filepath.Join(os.TempDir(), "kudzu-daemon"), "object directory shared by all jobs on this node")
+	dir := fs.String("dir", daemonDir(), "object directory shared by all jobs on this node (created owner-only)")
 	maxDisk := fs.String("max-disk", "10GB", "disk budget for cached objects")
 	conc := fs.Int("upstream-concurrency", 8, "max in-flight upstream requests")
 	seed := fs.String("seed", "", "snapshot file to load at startup (see 'kudzu snapshot')")
@@ -270,11 +314,14 @@ func cmdDaemon(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(*dir, 0o700); err != nil {
+		return err
+	}
 	objs, err := store.OpenFS(*dir, maxBytes)
 	if err != nil {
 		return err
 	}
-	return runTier(ctx, "daemon", *addr, *upstream, objs, *conc, *seed)
+	return runTier(ctx, "daemon", *addr, *sockMode, *upstream, objs, *conc, *seed)
 }
 
 func cmdImport(ctx context.Context, args []string) error {

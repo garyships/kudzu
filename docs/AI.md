@@ -8,7 +8,7 @@ Kudzu was built for a world where most clients are agents. You can connect one i
 
 All three talk to a Kudzu server (or a regional cache, or a node daemon) at `KUDZU_REMOTE`: `host:port`, `http(s)://host:port` or `unix:///path.sock`.
 
-No Kudzu server yet? Run `kudzu up` inside any git repository. It imports the history and serves all three tiers, with the node daemon on `unix:///tmp/kudzu.sock`, which is the address the snippets below use.
+No Kudzu server yet? Run `kudzu up` inside any git repository. It imports the history and serves all three tiers, with the node daemon on `unix:///tmp/kudzu.sock`, which is the address the snippets below use. Only the user who started it can connect. If a client refuses that socket because another user owns it, it is not your daemon: run your own with `kudzu up --socket PATH` and use `unix://PATH`.
 
 ## MCP server
 

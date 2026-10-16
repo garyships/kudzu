@@ -177,6 +177,8 @@ kudzu commit -m "api: say hi" --land main
 kudzu write -r main -m "bump version" --land main VERSION=@./VERSION
 ```
 
+A unix socket only lets its owner connect (mode 0600), because whoever can connect can land changes and move refs. To share a daemon between users, put its socket in a directory that is not world-writable and pass `--socket-mode 0660` (or `0666`). Clients refuse a socket in a world-writable directory such as `/tmp` that another user owns, since any user could have created it first.
+
 `scripts/demo.sh /path/to/git/repo` runs the whole flow end to end and prints each tier's cache statistics.
 
 </details>
