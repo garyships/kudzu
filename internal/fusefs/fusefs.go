@@ -10,6 +10,7 @@ package fusefs
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -71,8 +72,9 @@ var (
 	_ gofs.NodeReaddirer  = (*dirNode)(nil)
 	_ gofs.NodeGetattrer  = (*dirNode)(nil)
 	_ gofs.NodeOpener     = (*fileNode)(nil)
-	_ gofs.NodeReader     = (*fileNode)(nil)
 	_ gofs.NodeGetattrer  = (*fileNode)(nil)
+	_ gofs.FileReader     = (*fileHandle)(nil)
+	_ gofs.FileReleaser   = (*fileHandle)(nil)
 	_ gofs.NodeReadlinker = (*linkNode)(nil)
 	_ gofs.NodeGetattrer  = (*linkNode)(nil)
 )
@@ -162,18 +164,26 @@ func (f *fileNode) Open(_ context.Context, flags uint32) (gofs.FileHandle, uint3
 		return nil, 0, syscall.EROFS
 	}
 	// Contents never change, so the page cache stays valid across opens.
-	return nil, fuse.FOPEN_KEEP_CACHE, 0
+	return &fileHandle{h: f.v.OpenFile(f.n), node: &f.node}, fuse.FOPEN_KEEP_CACHE, 0
 }
 
-func (f *fileNode) Read(ctx context.Context, _ gofs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	data, err := f.v.ReadFile(ctx, f.n)
-	if err != nil {
-		return nil, f.errno(err)
+// fileHandle serves an open file's reads from content fetched once.
+type fileHandle struct {
+	h    *vfs.Handle
+	node *node
+}
+
+func (fh *fileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	n, err := fh.h.ReadAt(ctx, dest, off)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fh.node.errno(err)
 	}
-	if off >= int64(len(data)) {
-		return fuse.ReadResultData(nil), 0
-	}
-	return fuse.ReadResultData(data[off:min(off+int64(len(dest)), int64(len(data)))]), 0
+	return fuse.ReadResultData(dest[:n]), 0
+}
+
+func (fh *fileHandle) Release(context.Context) syscall.Errno {
+	fh.h.Close()
+	return 0
 }
 
 func (l *linkNode) Getattr(_ context.Context, _ gofs.FileHandle, out *fuse.AttrOut) syscall.Errno {

@@ -40,7 +40,7 @@ func (k *kudzu) addWriteTools(s *sdk.Server) {
 	}, k.wcCommitTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_wc_update",
-		Description: "Move a Kudzu working copy on this machine to another revision (default main), rewriting only files that differ. Refuses when the working copy has uncommitted changes to tracked files; untracked files at paths the new revision adds are overwritten.",
+		Description: "Move a Kudzu working copy on this machine to another revision (default main), rewriting only files that differ. Refuses when the working copy has uncommitted changes to tracked files, or when untracked files are where the new revision has files (the error lists them).",
 		Annotations: destructive("Update working copy"),
 	}, k.wcUpdateTool)
 }

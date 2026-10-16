@@ -81,12 +81,12 @@ All take `--remote`. Inside a working copy, `-r` defaults to the checked-out cha
 | Command | Flags | Purpose |
 |---|---|---|
 | `kudzu clone REMOTE DIR` | `-r main`, `--sparse dir1,dir2` | Create a working copy. DIR must be empty or missing. |
-| `kudzu status` | `--json` | `M` modified, `D` deleted, `?` untracked (respects `.kudzuignore`: `name`, `dir/` and `path/glob` patterns). |
+| `kudzu status` | `--json` | `M` modified, `D` deleted, `?` untracked (respects `.kudzuignore`: `name`, `dir/` and `path/glob` patterns; a nested git checkout's `.git` is always ignored). |
 | `kudzu commit` | `-m MSG` (required), `-A` (add untracked files), `--land REF`, `--author`, `--json` | Upload missing blobs and create a changeset on the checked-out one; with `--land`, land it in the same call. If the land rebased, the checkout moves to the landed changeset. On a conflict nothing changes locally. |
 | `kudzu land` | `--ref main`, `--json` | Land the checked-out changeset (and its unlanded ancestors), then move the checkout to what landed. |
 | `kudzu rebase` | `-d main` | Rebase the checked-out stack onto `-d` on the server and move the checkout there. No ref moves. |
-| `kudzu update [REV]` | `-r main`, `--force` | Move the checkout, rewriting only files that differ. Refuses if tracked files are modified unless `--force`, which discards local edits to tracked files (untracked files are kept). |
-| `kudzu sparse` | `show` (default), `set DIRS…`, `add DIRS…`, `remove DIRS…` | Show or change the sparse directories (`set .` means a full checkout). Refuses while tracked files are modified. |
+| `kudzu update [REV]` | `-r main`, `--force` | Move the checkout, rewriting only files that differ. Refuses if tracked files are modified, or if untracked files (ignored ones too) are where the new revision has files, unless `--force`, which discards both. Other untracked files are kept. |
+| `kudzu sparse` | `show` (default), `set DIRS…`, `add DIRS…`, `remove DIRS…` | Show or change the sparse directories (`set .` means a full checkout). Refuses while tracked files are modified, or if untracked files are where newly included files go. |
 | `kudzu mount REMOTE MOUNTPOINT` | `-r main`, `--sparse dir1,dir2`, `--cache DIR`, `--max-cache 2GB` | Mount a revision as a read-only FUSE filesystem; directories and files are fetched the first time they are listed or read. Needs a binary built with `go build -tags fuse ./cmd/kudzu`. Ctrl-C unmounts. |
 | `kudzu gc` | `--max-size 1GB`, `--json` | Trim the local object cache. |
 | `kudzu gc --store DIR` | `--keep 30d`, `--dry-run`, `--json` | Server maintenance: remove changesets no ref reaches (older than `--keep`) and the objects only they used. Safe while the server runs. |
@@ -182,13 +182,13 @@ Write:
 - `kudzu_land(head, ref? = main)`: returns the land result as above.
 - `kudzu_rebase(head, onto? = main)`: `{"head", "tree", "onto"}`. Creates new changesets and moves no ref.
 - `kudzu_wc_commit(message, dir?, add_untracked?, land?, author?)`: `{"changeset", "tree", "changes", "now_at", "land"?}`.
-- `kudzu_wc_update(dir?, rev? = main)`: `{"previous", "changeset", "tree"}`. Refuses if tracked files are modified, and never forces.
+- `kudzu_wc_update(dir?, rev? = main)`: `{"previous", "changeset", "tree"}`. Refuses if tracked files are modified or untracked files are in the way, and never forces.
 
 Errors are tool results with `isError: true`: invalid arguments, unknown revisions or paths, an unreachable server, `nothing to commit`. A conflict reads `conflict: <what happened>. Conflicting paths: a, b. <what to do next>`. A write whose land conflicts keeps its changeset (the message gives its ID) but doesn't land it. Calling a tool that `--read-only` hides is a protocol error (unknown tool).
 
 ## HTTP API
 
-Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored).
+Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache, verifying every object they fetch upstream before caching it. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored). Tiers close keep-alive connections idle for 2 minutes; the CLI and MCP server give up on connecting after 30 seconds and on response headers after 10 minutes.
 
 Errors: `{"error": "message"}` with status 400 (invalid request), 401 (missing or unknown token, when the server runs with `--auth`), 403 (`{"error": "permission denied: alice may not write docs/a.md", "path": "docs/a.md"}`; `path` is the denied path, or the ref for a land), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
 
@@ -232,7 +232,7 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 
 - `POST /objects/missing` `{"ids": [id, ...]}` → `{"missing": [id, ...]}`. Ask before uploading.
 - `POST /objects/upload`, a body of frames → `{"stored": n}`. Only blobs can be uploaded; trees and unodes are derived by the server, which verifies every hash.
-- `POST /api/changesets` `{"parents": [id], "author", "message", "changes": [{"path", "mode", "blob"}], "time"?, "tz"?, "extra"?, "land"?: "main"}` → `{"id", "tree", "seq", "land"?: {"landed", "previous", "attempts", "rebased"}}`. Every blob must already be on the server. With `land`, a 409 means the changeset was created but not landed, and its ID is not returned (create first, then call `/api/land`, if you need it). `parents: []` creates a root changeset.
+- `POST /api/changesets` `{"parents": [id], "author", "message", "changes": [{"path", "mode", "blob"}], "time"?, "tz"?, "extra"?, "land"?: "main"}` → `{"id", "tree", "seq", "land"?: {"landed", "previous", "attempts", "rebased"}}`. Every blob must already be on the server. With `land`, a 409 means the changeset was created but not landed, and its ID is not returned (create first, then call `/api/land`, if you need it). `parents: []` creates a root changeset. No path component may be `.git` or `.kudzu` in any case, also with trailing dots or spaces, or `git~1` or `kudzu~1` (400), except in a deletion.
 - `POST /api/land` `{"head": rev, "ref": "main"}` → `{"landed", "previous", "attempts", "rebased"}`. `landed == previous` means `head` was already on the ref.
 - `POST /api/rebase` `{"head": rev, "onto": rev}` → `{"head", "tree"}`. No ref moves.
 - `POST /api/merge` `{"ours": rev, "theirs": rev, "author", "message"}` → `{"id", "tree", "seq"}`, a two-parent changeset whose changes are listed relative to `ours`. No ref moves.
@@ -242,10 +242,11 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 
 - Object ID: `sha256(kind + " " + decimal length + "\0" + content)`, where kind is `blob`, `tree`, `unode` or `changeset`.
 - Stored form, identical on every tier and on the wire: one kind byte (`b`, `t`, `u`, `c`), one codec byte (0 raw, 1 zlib), then the payload. Blobs of 256 bytes or more are zlib-compressed when that is smaller.
+- An object's content is at most 1 GiB (2^30 bytes), so a stored object is at most 2^30 + 2 bytes. Larger files cannot be committed; frames claiming more are rejected.
 - `GET /objects/{id}` → one stored object (`Cache-Control: immutable`).
 - `POST /objects/fetch`: the body is concatenated raw 32-byte IDs (at most 65536). The response is a stream of frames.
-- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive.
-- Tree content: entries sorted by name, each `<octal mode> <name>\0<32-byte id>`.
+- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive. A tier that fails partway sends the frames it has and then aborts the response, so a frame stream (here or from `/api/snapshot`) that ends cleanly is complete; one that breaks off is not.
+- Tree content: entries sorted by name in byte order, no name twice (clients reject anything else), each `<octal mode> <name>\0<32-byte id>`.
 
 ### API-only write, step by step
 

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -31,7 +32,6 @@ type Tier struct {
 	Local store.Objects
 	Up    *proto.Remote
 
-	sem      chan struct{}
 	mu       sync.Mutex
 	inflight map[object.ID]*call
 	start    time.Time
@@ -53,15 +53,19 @@ type call struct {
 	err     error
 }
 
+// New returns a tier that fetches misses through up, with at most
+// upstreamConcurrency requests to it in flight (it sets up's fetch limit).
 func New(name string, local store.Objects, up *proto.Remote, upstreamConcurrency int) *Tier {
 	if upstreamConcurrency <= 0 {
 		upstreamConcurrency = 16
 	}
+	// The cap is on requests, not on batches of misses: one batch can span
+	// several requests, which Fetch runs in parallel.
+	up.SetFetchLimit(upstreamConcurrency)
 	return &Tier{
 		Name:     name,
 		Local:    local,
 		Up:       up,
-		sem:      make(chan struct{}, upstreamConcurrency),
 		inflight: map[object.ID]*call{},
 		start:    time.Now(),
 	}
@@ -163,15 +167,20 @@ func (t *Tier) FetchMany(ctx context.Context, ids []object.ID, emit func(object.
 func (t *Tier) fetchUpstream(ids []object.ID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	t.sem <- struct{}{}
-	defer func() { <-t.sem }()
 	t.upRequests.Add(1)
 	got := make(map[object.ID]bool, len(ids))
 	missing, err := t.Up.Fetch(ctx, ids, func(id object.ID, b []byte) error {
 		t.upObjects.Add(1)
 		t.upBytes.Add(int64(len(b)))
-		t.Local.Put(ctx, id, b)
 		got[id] = true
+		// Whatever is stored here is served to every client from now on,
+		// so a copy damaged on the way fails this fetch instead.
+		if _, err := object.Check(id, b); err != nil {
+			t.upFailures.Add(1)
+			t.complete(id, nil, false, fmt.Errorf("from upstream %s: %w", t.Up.Addr, err))
+			return nil
+		}
+		t.Local.Put(ctx, id, b)
 		t.complete(id, b, false, nil)
 		return nil
 	})
@@ -223,7 +232,7 @@ func (t *Tier) Seed(r io.Reader) (int, error) {
 		if miss {
 			continue
 		}
-		if _, _, err := object.Verify(id, data); err != nil {
+		if _, err := object.Check(id, data); err != nil {
 			return n, err
 		}
 		if err := t.Local.Put(context.Background(), id, data); err != nil {
