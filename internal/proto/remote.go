@@ -175,17 +175,28 @@ const (
 
 // Fetch requests objects in chunks, a few chunks at a time. fn is called once
 // per received object (never concurrently). Interrupted chunks are retried for
-// just the objects that did not arrive. It returns IDs no tier has.
+// just the objects that did not arrive. It returns IDs no tier has. The first
+// error, such as one returned by fn, stops the whole fetch and is returned.
 func (r *Remote) Fetch(ctx context.Context, ids []object.ID, fn func(id object.ID, stored []byte) error) ([]object.ID, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var mu sync.Mutex
 	var missing []object.ID
 	var firstErr error
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
 	sem := make(chan struct{}, fetchParallelism)
 	var wg sync.WaitGroup
 	for start := 0; start < len(ids); start += fetchChunk {
 		chunk := ids[start:min(start+fetchChunk, len(ids))]
-		wg.Add(1)
 		sem <- struct{}{}
+		if failed() {
+			break
+		}
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -199,6 +210,7 @@ func (r *Remote) Fetch(ctx context.Context, ids []object.ID, fn func(id object.I
 			missing = append(missing, miss...)
 			if err != nil && firstErr == nil {
 				firstErr = err
+				cancel() // stop the other chunks too
 			}
 		}()
 	}
@@ -227,24 +239,46 @@ func (r *Remote) fetchChunk(ctx context.Context, ids []object.ID, fn func(object
 				want = append(want, id)
 			}
 		}
+		var fnErr error
 		lastErr = r.fetchOnce(ctx, want, func(id object.ID, b []byte, miss bool) error {
 			if !pending[id] {
 				return nil
 			}
-			delete(pending, id)
 			if miss {
+				delete(pending, id)
 				missing = append(missing, id)
 				return nil
 			}
-			return fn(id, b)
+			// An object is done once fn has taken it. fn's error (a hash
+			// mismatch, a full disk) is the caller's, not the stream's:
+			// retrying would not help, and dropping it would turn into a
+			// misleading "not found" later.
+			if fnErr = fn(id, b); fnErr != nil {
+				return fnErr
+			}
+			delete(pending, id)
+			return nil
 		})
+		if fnErr != nil {
+			return nil, fnErr
+		}
 		var he *HTTPError
 		if errors.As(lastErr, &he) && he.Status < 500 {
 			return nil, lastErr
 		}
 	}
 	if len(pending) > 0 {
-		return missing, fmt.Errorf("fetch: %d objects not received: %w", len(pending), lastErr)
+		if lastErr == nil {
+			lastErr = errors.New("the response ended without them")
+		}
+		var first object.ID
+		for _, id := range ids {
+			if pending[id] {
+				first = id
+				break
+			}
+		}
+		return missing, fmt.Errorf("fetch: %d objects not received (e.g. %s): %w", len(pending), first.Short(), lastErr)
 	}
 	return missing, nil
 }
