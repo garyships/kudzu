@@ -70,12 +70,18 @@ func FuzzDecode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, stored []byte) {
 		kind, content, err := Decode(stored)
 		if err != nil {
+			if _, err := Check(Hash(KindBlob, nil), stored); err == nil {
+				t.Fatal("Check accepted what Decode rejects")
+			}
 			return
 		}
 		id := Hash(kind, content)
 		k, c, err := Verify(id, stored)
 		if err != nil || k != kind || !bytes.Equal(c, content) {
 			t.Fatalf("Verify disagrees with Decode: %v", err)
+		}
+		if k, err := Check(id, stored); err != nil || k != kind {
+			t.Fatalf("Check disagrees with Verify: %v", err)
 		}
 		k, c, err = Decode(Encode(kind, content))
 		if err != nil || k != kind || !bytes.Equal(c, content) {
@@ -85,6 +91,9 @@ func FuzzDecode(f *testing.F) {
 		other[0] ^= 1
 		if _, _, err := Verify(other, stored); err == nil {
 			t.Fatal("Verify accepted the wrong id")
+		}
+		if _, err := Check(other, stored); err == nil {
+			t.Fatal("Check accepted the wrong id")
 		}
 	})
 }

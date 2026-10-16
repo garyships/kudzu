@@ -49,6 +49,58 @@ func TestDecodeReusesReaders(t *testing.T) {
 	}
 }
 
+// TestSizeLimit: content past the limit is an error for every decoder,
+// compressed or not, and decoding stops at the limit instead of reading the
+// whole payload into memory first.
+func TestSizeLimit(t *testing.T) {
+	const limit = 1 << 20
+	for _, n := range []int{limit - 1, limit, limit + 1, 8 * limit} {
+		content := make([]byte, n)
+		id := Hash(KindBlob, content)
+		raw := append([]byte{byte(KindBlob), codecRaw}, content...)
+		for _, stored := range [][]byte{Encode(KindBlob, content), raw} {
+			_, got, err := decode(stored, limit)
+			_, _, verr := verify(id, stored, limit)
+			_, cerr := check(id, stored, limit)
+			if n > limit {
+				if err == nil || verr == nil || cerr == nil {
+					t.Fatalf("%d bytes, codec %d: accepted past a %d-byte limit: %v %v %v", n, stored[1], limit, err, verr, cerr)
+				}
+				continue
+			}
+			if err != nil || verr != nil || cerr != nil || len(got) != n {
+				t.Fatalf("%d bytes, codec %d: %v %v %v", n, stored[1], err, verr, cerr)
+			}
+			if c := cap(got); stored[1] == codecZlib && c > limit+64<<10 {
+				t.Fatalf("%d bytes decoded into a %d-byte buffer", n, c)
+			}
+		}
+	}
+}
+
+// TestCheckDoesNotInflateIntoMemory: a small payload that inflates to 16 MiB
+// costs Check CPU, not memory (Verify needs the whole content).
+func TestCheckDoesNotInflateIntoMemory(t *testing.T) {
+	content := make([]byte, 16<<20)
+	id, stored := EncodeObject(KindBlob, content)
+	content = nil
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	kind, err := Check(id, stored)
+	runtime.ReadMemStats(&after)
+	if err != nil || kind != KindBlob {
+		t.Fatalf("Check: %v %v", kind, err)
+	}
+	if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
+		t.Fatalf("Check of a %d-byte payload allocated %d bytes", len(stored), n)
+	}
+	stored[len(stored)-1] ^= 1
+	if _, err := Check(id, stored); err == nil {
+		t.Fatal("corruption not detected")
+	}
+}
+
 func BenchmarkDecode(b *testing.B) {
 	stored := Encode(KindBlob, sourceBlob)
 	b.SetBytes(int64(len(sourceBlob)))

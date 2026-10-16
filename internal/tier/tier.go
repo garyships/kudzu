@@ -223,7 +223,7 @@ func (t *Tier) Seed(r io.Reader) (int, error) {
 		if miss {
 			continue
 		}
-		if _, _, err := object.Verify(id, data); err != nil {
+		if _, err := object.Check(id, data); err != nil {
 			return n, err
 		}
 		if err := t.Local.Put(context.Background(), id, data); err != nil {

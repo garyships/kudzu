@@ -241,6 +241,7 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 
 - Object ID: `sha256(kind + " " + decimal length + "\0" + content)`, where kind is `blob`, `tree`, `unode` or `changeset`.
 - Stored form, identical on every tier and on the wire: one kind byte (`b`, `t`, `u`, `c`), one codec byte (0 raw, 1 zlib), then the payload. Blobs of 256 bytes or more are zlib-compressed when that is smaller.
+- An object's content is at most 1 GiB (2^30 bytes), so a stored object is at most 2^30 + 2 bytes. Larger files cannot be committed; frames claiming more are rejected.
 - `GET /objects/{id}` → one stored object (`Cache-Control: immutable`).
 - `POST /objects/fetch`: the body is concatenated raw 32-byte IDs (at most 65536). The response is a stream of frames.
 - Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive.

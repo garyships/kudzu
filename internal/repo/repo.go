@@ -88,6 +88,10 @@ func (r *Repo) readObject(ctx context.Context, id object.ID, want object.Kind) (
 // writeObject stores an object unless it exists already, in which case it is
 // touched so that garbage collection keeps it now that it is reused.
 func (r *Repo) writeObject(ctx context.Context, kind object.Kind, content []byte) (object.ID, error) {
+	if len(content) > object.MaxSize {
+		// No tier would decode it.
+		return object.Zero, fmt.Errorf("%w: %s of %d bytes is over the %d-byte object limit", ErrInvalid, kind, len(content), object.MaxSize)
+	}
 	id := object.Hash(kind, content)
 	if err := store.Touch(ctx, r.Objs, id); err == nil {
 		return id, nil

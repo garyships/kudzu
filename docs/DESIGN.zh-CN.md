@@ -32,6 +32,8 @@
 
 客户端解码 tree 时会拒绝 `..`、`/` 之类的条目名，恶意服务端没法让客户端写到工作区外面。
 
+单个对象的内容最多 1 GiB（`object.MaxSize`），读取方从不轻信对端报的大小：帧头声明的长度超过最大存储形式就直接拒绝，帧的缓冲区随实际收到的字节增长，解压到上限就停。所以无论是一个 37 字节的帧头，还是一小段能无限膨胀的压缩数据，都没法让任何一层分配超过这个上限的内存。
+
 ## 2. 存储（`internal/store`）
 
 文章里有两种存储角色，这里都是接口：
@@ -140,7 +142,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 没有一次性的几 GB packfile，按对象流式返回；连接断了只重新要还没收到的那些（`Remote.fetchChunk`）
 - sparse checkout 不需要协议特别支持：客户端不要不需要的子树就行
 
-写入方向：`POST /objects/missing` 先问服务端缺哪些 blob，`POST /objects/upload` 只传缺的，服务端逐个校验哈希。
+写入方向：`POST /objects/missing` 先问服务端缺哪些 blob，`POST /objects/upload` 只传缺的，服务端逐个校验哈希，校验时不把内容留在内存里（`object.Check`）：压缩的 blob 解压两遍，第一遍只数出哈希头需要的长度，第二遍直接写进哈希。解压炸弹只会消耗 CPU，不会占用内存。
 
 ## 7. 缓存层（`internal/tier`）
 

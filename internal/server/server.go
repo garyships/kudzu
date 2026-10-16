@@ -236,7 +236,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		if miss {
 			continue
 		}
-		kind, _, err := object.Verify(id, data)
+		// Check rather than Verify: a payload that inflates to a gigabyte
+		// must not be held in memory just to be hashed.
+		kind, err := object.Check(id, data)
 		if err != nil {
 			s.fail(w, fmt.Errorf("%w: %v", repo.ErrInvalid, err))
 			return

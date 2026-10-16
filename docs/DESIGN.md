@@ -32,6 +32,8 @@ Object IDs are `sha256("<kind> <len>\0" + content)`. The **stored form** `[kind]
 
 Tree decoding rejects names like `..` or `a/b`, so a hostile server cannot make a client write outside its working copy.
 
+An object's content is at most 1 GiB (`object.MaxSize`), and no reader trusts a peer about sizes: a frame whose header claims more than the largest stored object is refused, a frame's buffer grows only as its bytes arrive, and decompression stops at the limit. Neither a 37-byte frame header nor a small payload that inflates without end can make a tier allocate more than that.
+
 ## 2. Storage (`internal/store`)
 
 The post describes two storage roles. Both are interfaces in Kudzu:
@@ -140,7 +142,7 @@ POST /objects/fetch     body: concatenated 32-byte IDs
 - There is no multi-gigabyte packfile. Responses stream object by object, and an interrupted transfer re-asks only for what didn't arrive (`Remote.fetchChunk`).
 - Sparse checkouts need no protocol support: the client just doesn't ask for subtrees it doesn't want.
 
-Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash.
+Uploads go the other way: `POST /objects/missing` asks which blobs the server lacks, and `POST /objects/upload` sends only those. The server verifies every hash without holding the content (`object.Check`): a compressed blob is inflated twice, once to count the length that the hash covers and once into the hash, so a decompression bomb costs CPU but not memory.
 
 ## 7. Cache tiers (`internal/tier`)
 

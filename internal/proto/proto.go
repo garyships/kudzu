@@ -74,15 +74,42 @@ func (f *FrameReader) Next() (id object.ID, data []byte, missing bool, err error
 		return
 	}
 	copy(id[:], hdr[:object.IDSize])
-	if hdr[object.IDSize] == statusMissing {
+	switch hdr[object.IDSize] {
+	case statusMissing:
 		return id, nil, true, nil
+	case statusOK:
+	default:
+		return id, nil, false, fmt.Errorf("frame for object %s: unknown status %d", id.Short(), hdr[object.IDSize])
 	}
 	n := binary.BigEndian.Uint32(hdr[object.IDSize+1:])
-	data = make([]byte, n)
-	if _, err = io.ReadFull(f.r, data); err != nil {
-		err = fmt.Errorf("truncated frame: %w", err)
+	if n > object.MaxStoredSize {
+		return id, nil, false, fmt.Errorf("frame for object %s: %d bytes is over the %d-byte object limit", id.Short(), n, object.MaxStoredSize)
 	}
-	return
+	if data, err = readFrameData(f.r, int(n)); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return id, nil, false, fmt.Errorf("truncated frame for object %s: %w", id.Short(), err)
+	}
+	return id, data, false, nil
+}
+
+// readFrameData reads an n-byte frame payload. A header costs its sender
+// 37 bytes, so the buffer grows with the data that actually arrives rather
+// than being allocated up front at the length the header claims.
+func readFrameData(r io.Reader, n int) ([]byte, error) {
+	b := make([]byte, 0, min(n, 1<<20))
+	for len(b) < n {
+		if len(b) == cap(b) {
+			b = append(make([]byte, 0, len(b)+min(len(b), n-len(b))), b...)
+		}
+		k, err := io.ReadFull(r, b[len(b):cap(b)])
+		b = b[:len(b)+k]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
 // EncodeIDs and DecodeIDs handle fetch request bodies.
