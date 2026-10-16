@@ -32,7 +32,7 @@ export KUDZU_REMOTE=unix:///tmp/kudzu.sock   # in another shell
 Each tier as its own process (how a real deployment runs):
 
 ```bash
-kudzu import --store ./data --git /path/to/repo --as main     # git history -> changesets; re-run to add new commits
+kudzu import --store ./data --git /path/to/repo --as main     # git history -> changesets; re-run to add new commits (main only fast-forwards)
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
 kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock --dir /tmp/kudzu-objects &
@@ -49,13 +49,13 @@ A single `kudzu server` is enough for experiments: point `KUDZU_REMOTE` at it di
 
 | Command | Flags (default) | Purpose |
 |---|---|---|
-| `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `-v` | Playground: import a git repository (incrementally) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
+| `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `--force`, `-v` | Playground: import a git repository (incrementally, moving `--as` like `kudzu import`) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
 | `kudzu version` | | Print the version (`kudzu --version` works too). |
 | `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly), `--auth FILE` (access policy), `--meta postgres://…` and `--objects s3://bucket/prefix?endpoint=…` (shared backends instead of `--store`; `gs://` for GCS; credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) | Authoritative server: SQLite metadata plus an object directory, or Postgres plus an S3-compatible bucket so several servers can serve one repository. With `--auth`, requests need a bearer token and per-directory rules apply (see Access control). |
 | `kudzu token` | `--json` | Generate a random access token and the `token_sha256` to put in an `--auth` policy. |
 | `kudzu cache` | `--listen 127.0.0.1:7071`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
 | `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--upstream 127.0.0.1:7071`, `--dir $TMPDIR/kudzu-daemon`, `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. |
-| `kudzu import` | `--store kudzu-data` (or `--meta`/`--objects`), `--git .`, `--ref HEAD`, `--as main` | Import git history into a server store. Incremental: commits already imported are skipped. |
+| `kudzu import` | `--store kudzu-data` (or `--meta`/`--objects`), `--git .`, `--ref HEAD`, `--as main`, `--force` | Import git history into a server store. Incremental: commits already imported are skipped. `--as` only fast-forwards: if it has changesets the git revision lacks (landed in Kudzu since the last import), it is left alone with a warning; `kudzu export` them to a git branch and merge it there, or pass `--force` to move it anyway. |
 | `kudzu export` | `--store kudzu-data`, `--git PATH` (required), `--ref main`, `--as` (git branch, default same as `--ref`), `--force`, `--json` | Write the ref's history to a git repository (bare, or with the branch not checked out) and move the branch, fast-forward only unless `--force`. Incremental; imported commits map back to the originals, so exporting to the repository you imported from adds only what landed in Kudzu. |
 | `kudzu snapshot` | `--remote`, `-r main`, `--sparse a,b`, `-o kudzu-seed.frames` | Save every object of a revision, for `kudzu daemon --seed`. |
 | `kudzu stats` | `--remote` | Print a tier's statistics as JSON. |

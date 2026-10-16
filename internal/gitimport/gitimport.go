@@ -31,8 +31,18 @@ const mappingNS = "git"
 type Result struct {
 	Commits  int       `json:"commits"`
 	Imported int       `json:"imported"`
-	Tip      object.ID `json:"tip"`
-	Elapsed  string    `json:"elapsed"`
+	Tip      object.ID `json:"tip"` // the imported git revision's changeset
+	// Ref is where the Kudzu ref points after the import, and RefMoved says
+	// whether the import moved it there.
+	Ref      object.ID `json:"ref"`
+	RefMoved bool      `json:"ref_moved"`
+	// Kept means the ref was left alone because it has changesets that Tip
+	// lacks, typically work landed through Kudzu since the last import.
+	// Diverged means Tip also has commits the ref lacks; otherwise Tip is
+	// already part of the ref's history.
+	Kept     bool   `json:"kept,omitempty"`
+	Diverged bool   `json:"diverged,omitempty"`
+	Elapsed  string `json:"elapsed"`
 }
 
 type importer struct {
@@ -47,8 +57,10 @@ type importer struct {
 }
 
 // Run imports ref from the git repository at gitDir and points kudzuRef at
-// the result.
-func Run(ctx context.Context, r *repo.Repo, gitDir, ref, kudzuRef string, progress io.Writer) (*Result, error) {
+// the result if that is a fast-forward: kudzuRef does not exist yet or is
+// part of the imported history. Otherwise kudzuRef keeps the changesets
+// landed on it and is left alone (Result.Kept), unless force.
+func Run(ctx context.Context, r *repo.Repo, gitDir, ref, kudzuRef string, force bool, progress io.Writer) (*Result, error) {
 	start := time.Now()
 	im := &importer{
 		repo:    r,
@@ -97,22 +109,49 @@ func Run(ctx context.Context, r *repo.Repo, gitDir, ref, kudzuRef string, progre
 	}
 	res.Tip = tip
 	if !tip.IsZero() {
-		for attempt := 0; ; attempt++ {
-			old, err := r.Meta.GetRef(ctx, kudzuRef)
-			if err != nil && !errors.Is(err, store.ErrNotFound) {
-				return nil, err
-			}
-			err = r.Meta.CASRef(ctx, kudzuRef, old, tip)
-			if err == nil || old == tip {
-				break
-			}
-			if !errors.Is(err, store.ErrConflict) || attempt > 10 {
-				return nil, err
-			}
+		if err := moveRef(ctx, r, kudzuRef, tip, force, res); err != nil {
+			return nil, err
 		}
 	}
 	res.Elapsed = time.Since(start).Round(time.Millisecond).String()
 	return res, nil
+}
+
+// moveRef points name at tip, by compare-and-swap, unless that would drop
+// changesets from it: re-importing must not rewind work landed in Kudzu.
+func moveRef(ctx context.Context, r *repo.Repo, name string, tip object.ID, force bool, res *Result) error {
+	for attempt := 0; ; attempt++ {
+		old, err := r.Meta.GetRef(ctx, name)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		res.Ref = old
+		if old == tip {
+			return nil
+		}
+		if !old.IsZero() && !force {
+			ff, err := r.IsAncestor(ctx, old, tip)
+			if err != nil {
+				return err
+			}
+			if !ff {
+				behind, err := r.IsAncestor(ctx, tip, old)
+				if err != nil {
+					return err
+				}
+				res.Kept, res.Diverged = true, !behind
+				return nil
+			}
+		}
+		err = r.Meta.CASRef(ctx, name, old, tip)
+		if err == nil {
+			res.Ref, res.RefMoved = tip, true
+			return nil
+		}
+		if !errors.Is(err, store.ErrConflict) || attempt > 10 {
+			return err
+		}
+	}
 }
 
 func (im *importer) git(args ...string) (string, error) {

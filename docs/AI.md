@@ -8,7 +8,7 @@ Kudzu was built for a world where most clients are agents. You can connect one i
 
 All three talk to a Kudzu server (or a regional cache, or a node daemon) at `KUDZU_REMOTE`: `host:port`, `http(s)://host:port` or `unix:///path.sock`.
 
-No Kudzu server yet? Run `kudzu up` inside any git repository. It imports the history and serves all three tiers, with the node daemon on `unix:///tmp/kudzu.sock`, which is the address the snippets below use.
+No Kudzu server yet? Run `kudzu up` inside any git repository. It imports the history and serves all three tiers, with the node daemon on `unix:///tmp/kudzu.sock`, which is the address the snippets below use. Restarting it imports only new git commits and keeps what agents landed: `main` moves to the git tip only as a fast-forward, otherwise it stays put with a warning (`kudzu export` carries the landed work back to git).
 
 ## MCP server
 
