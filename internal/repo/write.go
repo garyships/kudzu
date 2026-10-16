@@ -101,6 +101,10 @@ func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) 
 	}
 	raw := c.Encode()
 	id := object.Hash(object.KindChangeset, raw)
+	// The trees just written must be on disk before the log names them.
+	if err := store.Sync(r.Objs); err != nil {
+		return nil, err
+	}
 	seq, err := r.Meta.AppendChangeset(ctx, id, raw)
 	if err != nil {
 		return nil, err

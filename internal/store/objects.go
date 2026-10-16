@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -74,13 +75,37 @@ const touchInterval = 10 * time.Minute
 
 // FS stores one file per object under dir/ab/cdef.... When maxBytes > 0 it
 // acts as a bounded cache: least recently used objects are evicted.
+//
+// An empty file is not an object (every stored object has a two-byte
+// header); it is what a crash can leave of a write that never reached the
+// disk, so FS treats it as missing and the object gets written again.
 type FS struct {
 	dir      string
 	maxBytes int64
+	durable  bool // objects become durable at Sync (OpenDurableFS)
 	sizeMu   sync.Mutex
 	sized    bool // size holds the total, see loadSize
 	size     atomic.Int64
 	gcMu     sync.Mutex
+
+	syncMu  sync.Mutex // serializes Sync
+	pendMu  sync.Mutex
+	pending map[string]bool // objects written since the last Sync
+}
+
+// Syncer is an object store that makes writes durable in batches: objects
+// are only guaranteed to be on disk once Sync returns. The repository syncs
+// before committing metadata that names new objects.
+type Syncer interface {
+	Sync() error
+}
+
+// Sync makes objs' writes durable if it batches them.
+func Sync(objs Objects) error {
+	if s, ok := objs.(Syncer); ok {
+		return s.Sync()
+	}
+	return nil
 }
 
 func OpenFS(dir string, maxBytes int64) (*FS, error) {
@@ -119,6 +144,74 @@ func (s *FS) loadSize() {
 	s.sized = true
 }
 
+// OpenDurableFS opens an unbounded FS for an authoritative store, whose
+// metadata commits changesets and refs that name its objects. Objects it
+// writes are on disk once Sync returns: syncing in batches costs one sync
+// per changeset rather than two per object. Caches and working copies use
+// OpenFS: an object lost there is just fetched again.
+func OpenDurableFS(dir string) (*FS, error) {
+	s, err := OpenFS(dir, 0)
+	if err != nil {
+		return nil, err
+	}
+	s.durable = true
+	// Make the shard directories OpenFS may have just created durable too.
+	if err := syncDir(dir); err != nil {
+		return nil, err
+	}
+	if err := syncDir(filepath.Dir(dir)); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// syncDir makes the entries created or renamed in dir durable. Windows
+// cannot sync a directory handle; there this is a no-op.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// Sync makes every object written since the last Sync durable. Concurrent
+// calls are serialized, so none returns while an earlier one is still
+// flushing objects its caller depends on.
+func (s *FS) Sync() error {
+	if !s.durable {
+		return nil
+	}
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	s.pendMu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.pendMu.Unlock()
+	if len(pending) == 0 {
+		return nil
+	}
+	if err := syncObjects(s.dir, pending); err != nil {
+		s.pendMu.Lock() // try them again next time
+		if s.pending == nil {
+			s.pending = map[string]bool{}
+		}
+		for p := range pending {
+			s.pending[p] = true
+		}
+		s.pendMu.Unlock()
+		return err
+	}
+	return nil
+}
+
 func (s *FS) path(id object.ID) string {
 	h := id.String()
 	return filepath.Join(s.dir, h[:2], h[2:])
@@ -127,7 +220,7 @@ func (s *FS) path(id object.ID) string {
 func (s *FS) Get(_ context.Context, id object.ID) ([]byte, error) {
 	p := s.path(id)
 	b, err := os.ReadFile(p)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) || err == nil && len(b) == 0 {
 		return nil, ErrNotFound
 	}
 	if err == nil && s.maxBytes > 0 {
@@ -143,7 +236,7 @@ func (s *FS) Get(_ context.Context, id object.ID) ([]byte, error) {
 func (s *FS) Touch(_ context.Context, id object.ID) error {
 	p := s.path(id)
 	info, err := os.Stat(p)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) || err == nil && info.Size() == 0 {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -235,19 +328,20 @@ func (s *FS) CleanTmp(cutoff time.Time) (int, error) {
 }
 
 func (s *FS) Has(_ context.Context, id object.ID) (bool, error) {
-	_, err := os.Stat(s.path(id))
+	info, err := os.Stat(s.path(id))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	return err == nil, err
+	return err == nil && info.Size() > 0, err
 }
 
 // Put writes via a temp file and rename. Objects are immutable, so racing
 // writers of the same ID are harmless: both renames install identical bytes.
+// A durable FS records the object for the next Sync.
 func (s *FS) Put(_ context.Context, id object.ID, stored []byte) error {
 	p := s.path(id)
 	if s.maxBytes > 0 {
-		if _, err := os.Stat(p); err == nil {
+		if info, err := os.Stat(p); err == nil && info.Size() > 0 {
 			return nil // keep size accounting exact for bounded caches
 		}
 		s.loadSize() // first, or the total would count this object twice
@@ -256,7 +350,7 @@ func (s *FS) Put(_ context.Context, id object.ID, stored []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(stored); err != nil {
+	if _, err = f.Write(stored); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return err
@@ -268,6 +362,14 @@ func (s *FS) Put(_ context.Context, id object.ID, stored []byte) error {
 	if err := os.Rename(f.Name(), p); err != nil {
 		os.Remove(f.Name())
 		return err
+	}
+	if s.durable {
+		s.pendMu.Lock()
+		if s.pending == nil {
+			s.pending = map[string]bool{}
+		}
+		s.pending[p] = true
+		s.pendMu.Unlock()
 	}
 	if s.maxBytes > 0 && s.size.Add(int64(len(stored))) > s.maxBytes {
 		go s.GC(s.maxBytes * 9 / 10)
@@ -456,3 +558,6 @@ func (c *Cached) DeleteIfOlder(ctx context.Context, id object.ID, cutoff time.Ti
 	}
 	return removed, size, err
 }
+
+// Sync syncs the backing store.
+func (c *Cached) Sync() error { return Sync(c.Backing) }
