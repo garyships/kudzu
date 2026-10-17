@@ -24,7 +24,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 Quickest: one process runs all three tiers on top of a git repository.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh   # or: go install github.com/garyships/kudzu/cmd/kudzu@latest (Go 1.24+)
+curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh   # or: go install github.com/garyships/kudzu/cmd/kudzu@latest (Go 1.26+)
 cd /path/to/any/git/repo && kudzu up      # imports history, serves until Ctrl-C
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock   # in another shell
 ```

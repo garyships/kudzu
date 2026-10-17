@@ -13,7 +13,7 @@ No full clones. History as an API. Lock-free landing for thousands of concurrent
 [![ci](https://github.com/garyships/kudzu/actions/workflows/ci.yml/badge.svg)](https://github.com/garyships/kudzu/actions/workflows/ci.yml)
 [![MCP: 16 tools](https://img.shields.io/badge/MCP-16_tools-8b5cf6)](docs/AI.md)
 [![license: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
-![go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8)
+![go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8)
 
 [**Website**](https://garyships.github.io/kudzu/) · [**Demo video**](https://garyships.github.io/kudzu/#demo) · [Design](docs/DESIGN.md) · [For AI agents](docs/AI.md) · [中文](README.zh-CN.md)
 
