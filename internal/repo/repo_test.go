@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
@@ -453,5 +455,119 @@ func TestLazyDerivation(t *testing.T) {
 	}
 	if len(log) != 17 {
 		t.Fatalf("path log has %d entries, want 17", len(log))
+	}
+}
+
+// testDeriver has no parents; compute supplies the value.
+func testDeriver(name string, compute func(ctx context.Context) ([]byte, error)) *Deriver {
+	return &Deriver{
+		Name:    name,
+		Parents: func(context.Context, *Repo, object.ID) ([]object.ID, error) { return nil, nil },
+		Compute: func(ctx context.Context, _ *Repo, _ object.ID, _ [][]byte) ([]byte, error) { return compute(ctx) },
+	}
+}
+
+type deriveResult struct {
+	val []byte
+	err error
+}
+
+// deriveAsync calls Derive on its own goroutine. A panic is reported as an
+// error, the way an HTTP server survives a panicking handler, so tests can
+// see what the other callers get.
+func deriveAsync(ctx context.Context, r *Repo, d *Deriver, key object.ID) <-chan deriveResult {
+	ch := make(chan deriveResult, 1)
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				ch <- deriveResult{err: fmt.Errorf("panic: %v", p)}
+			}
+		}()
+		v, err := r.Derive(ctx, d, key)
+		ch <- deriveResult{v, err}
+	}()
+	return ch
+}
+
+func waitDerive(t *testing.T, ch <-chan deriveResult, who string) deriveResult {
+	t.Helper()
+	select {
+	case res := <-ch:
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s is still waiting", who)
+		return deriveResult{}
+	}
+}
+
+// A caller that gives up (an HTTP client hanging up during a large blame)
+// must not fail the others waiting for the same derived value.
+func TestDeriveSurvivesCanceledCaller(t *testing.T) {
+	r := newTestRepo(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	d := testDeriver("test-slow", func(ctx context.Context) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return []byte("value"), nil
+	})
+	key := object.Hash(object.KindBlob, []byte("key"))
+	ctx, cancel := context.WithCancel(context.Background())
+	first := deriveAsync(ctx, r, d, key)
+	<-started
+	second := deriveAsync(context.Background(), r, d, key)
+	cancel()
+	select {
+	case res := <-first:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Errorf("canceled caller got %q, %v; want context.Canceled", res.val, res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("canceled caller is still waiting for the computation")
+	}
+	close(release)
+	if res := waitDerive(t, second, "second caller"); res.err != nil || string(res.val) != "value" {
+		t.Fatalf("second caller got %q, %v", res.val, res.err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("computed %d times, want once", n)
+	}
+}
+
+// A panic while computing a derived value reaches every caller as an error,
+// and the key can be derived again afterwards.
+func TestDerivePanicReleasesCallers(t *testing.T) {
+	r := newTestRepo(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var broken atomic.Bool
+	broken.Store(true)
+	d := testDeriver("test-panic", func(context.Context) ([]byte, error) {
+		if broken.Load() {
+			once.Do(func() { close(started) })
+			<-release
+			panic("boom")
+		}
+		return []byte("value"), nil
+	})
+	key := object.Hash(object.KindBlob, []byte("key"))
+	ctx := context.Background()
+	first := deriveAsync(ctx, r, d, key)
+	<-started
+	second := deriveAsync(ctx, r, d, key)
+	close(release)
+	for who, ch := range map[string]<-chan deriveResult{"first caller": first, "second caller": second} {
+		if res := waitDerive(t, ch, who); res.err == nil || !strings.Contains(res.err.Error(), "boom") {
+			t.Errorf("%s got %q, %v; want the panic as an error", who, res.val, res.err)
+		}
+	}
+	broken.Store(false)
+	if res := waitDerive(t, deriveAsync(ctx, r, d, key), "caller after the panic"); res.err != nil || string(res.val) != "value" {
+		t.Fatalf("after the panic: got %q, %v", res.val, res.err)
 	}
 }

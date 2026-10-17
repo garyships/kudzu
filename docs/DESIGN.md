@@ -82,7 +82,7 @@ type Deriver struct {
 }
 ```
 
-`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key.
+`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key. A shared computation runs detached from the caller that started it, so one caller hanging up (say, during a large blame) doesn't fail the others waiting for the same value, and a panic in `Compute` becomes every waiter's error instead of leaving the key stuck.
 
 | Name | Key | Value | Used for | Default |
 |---|---|---|---|---|
