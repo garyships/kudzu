@@ -50,6 +50,9 @@ type importer struct {
 // the result.
 func Run(ctx context.Context, r *repo.Repo, gitDir, ref, kudzuRef string, progress io.Writer) (*Result, error) {
 	start := time.Now()
+	if err := repo.ValidateRefName(kudzuRef); err != nil {
+		return nil, err
+	}
 	im := &importer{
 		repo:    r,
 		gitDir:  gitDir,

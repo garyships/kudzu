@@ -79,14 +79,44 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-// writeCtx makes every changeset created under ctx check the caller's write
-// permission on each path it changes (create, rebase, merge and land).
+// writeCtx makes every write under ctx check the caller's write permission
+// on each path whose content it changes: the changes of each changeset it
+// creates (create, rebase, merge, land) and the difference a ref move makes
+// (land, compare-and-swap). A denied path the caller may not even read is
+// not named, so writes cannot be used to discover hidden paths.
 func writeCtx(ctx context.Context) context.Context {
 	p := auth.FromContext(ctx)
-	if p == nil {
+	if p.WritesAll("") {
 		return ctx
 	}
-	return repo.WithChangeCheck(ctx, p.CheckWrite)
+	return repo.WithChangeCheck(ctx, func(path string) error {
+		if p.CanWrite(path) {
+			return nil
+		}
+		if !p.CanRead(path) {
+			return &auth.DeniedError{Principal: p.Name, Action: "write", Hidden: true}
+		}
+		return &auth.DeniedError{Principal: p.Name, Action: "write", Path: path}
+	})
+}
+
+// redact removes paths the caller may not read from a conflict error, so a
+// merge or rebase against someone else's changes cannot list them.
+func redact(ctx context.Context, err error) error {
+	p := auth.FromContext(ctx)
+	var ce *repo.ConflictError
+	if p.ReadsAll("") || !errors.As(err, &ce) {
+		return err
+	}
+	out := &repo.ConflictError{Hidden: ce.Hidden}
+	for _, path := range ce.Paths {
+		if p.CanRead(path) {
+			out.Paths = append(out.Paths, path)
+		} else {
+			out.Hidden++
+		}
+	}
+	return out
 }
 
 func (s *Server) routes() *http.ServeMux {
@@ -383,7 +413,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Land != "" {
 		res, err := s.Repo.Land(ctx, c.ID, req.Land)
 		if err != nil {
-			s.fail(w, err)
+			s.fail(w, redact(ctx, err))
 			return
 		}
 		s.noteLand(res)
@@ -707,7 +737,7 @@ func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Repo.Meta.CASRef(r.Context(), r.PathValue("name"), req.Old, target); err != nil {
+	if err := s.Repo.MoveRef(writeCtx(r.Context()), r.PathValue("name"), req.Old, target); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -736,7 +766,7 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	}
 	newHead, err := s.Repo.Rebase(ctx, head, onto)
 	if err != nil {
-		s.fail(w, err)
+		s.fail(w, redact(ctx, err))
 		return
 	}
 	tree, err := s.treeFor(ctx, newHead)
@@ -771,7 +801,7 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.Repo.Merge(ctx, ours, theirs, req.Author, req.Message)
 	if err != nil {
-		s.fail(w, err)
+		s.fail(w, redact(ctx, err))
 		return
 	}
 	if c.Tree, err = s.viewTree(ctx, c.Tree); err != nil {
@@ -805,7 +835,7 @@ func (s *Server) handleLand(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.Repo.Land(ctx, head, req.Ref)
 	if err != nil {
-		s.fail(w, err)
+		s.fail(w, redact(ctx, err))
 		return
 	}
 	s.noteLand(res)
@@ -819,9 +849,12 @@ func (s *Server) handleWAL(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// A changeset the caller may not see is still listed, as {seq, id,
+	// hidden}, so a reader's cursor keeps moving past it.
 	type walView struct {
-		Seq int64     `json:"seq"`
-		ID  object.ID `json:"id"`
+		Seq    int64     `json:"seq"`
+		ID     object.ID `json:"id"`
+		Hidden bool      `json:"hidden,omitempty"`
 		*object.Changeset
 	}
 	pr := auth.FromContext(r.Context())
@@ -834,10 +867,11 @@ func (s *Server) handleWAL(w http.ResponseWriter, r *http.Request) {
 		}
 		changes, ok := visibleChanges(pr, c)
 		if !ok {
+			out = append(out, walView{Seq: e.Seq, ID: e.ID, Hidden: true})
 			continue
 		}
 		c.Changes = changes
-		out = append(out, walView{e.Seq, e.ID, c})
+		out = append(out, walView{Seq: e.Seq, ID: e.ID, Changeset: c})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
