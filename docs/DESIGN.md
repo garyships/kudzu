@@ -57,7 +57,7 @@ With the local defaults there is one authoritative server process. `kudzu server
 - **Postgres** holds the same four tables. A ref moves by `UPDATE refs … WHERE name = $1 AND target = $old` and checks the rows affected, so lands on different servers race exactly as they do in one process: the loser rebases and retries. Derived data is `INSERT … ON CONFLICT DO NOTHING`, since every server computes the same value. The one subtlety is the log: a sequence hands out `seq` at insert time, not commit time, so two concurrent appends could commit out of order and a `/api/wal` reader could skip one. Appends therefore take a transaction-scoped advisory lock around a single-row insert, which keeps commit order equal to log order.
 - **S3-compatible buckets** hold objects under `prefix/ab/cdef…`. Objects are immutable, so servers never coordinate over them, and each server's memory cache can keep any object indefinitely. Kudzu signs requests itself (AWS Signature Version 4, checked against AWS's published examples), so there is no cloud SDK dependency. `gs://` uses GCS's S3-compatible XML API with HMAC keys; `?endpoint=` points at MinIO, R2 or anything else S3-compatible. gc's touch is a server-side copy of an object onto itself, which refreshes `Last-Modified` without moving data.
 
-The repo and end-to-end tests run against these backends too when `KUDZU_TEST_POSTGRES` and `KUDZU_TEST_S3` are set (`internal/store/storetest`); CI does this with Postgres and MinIO.
+The repo and end-to-end tests run against these backends too when `KUDZU_TEST_POSTGRES` and `KUDZU_TEST_S3` are set (`internal/store/storetest`); CI does this with Postgres and SeaweedFS's S3 gateway.
 
 ### Garbage collection (`internal/repo/gc.go`)
 
