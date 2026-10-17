@@ -52,6 +52,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	dir := fs.String("dir", "", "data directory (default: a per-repository folder in your user cache dir)")
 	port := fs.Int("port", 7070, "server port; the regional cache uses port+1 (0 picks free ports)")
 	sock := fs.String("socket", defaultSocket(), "unix socket for the node daemon")
+	force := fs.Bool("force", false, "move --as to the imported tip even if that drops changesets landed in kudzu")
 	verbose := fs.Bool("v", false, "log every tier's requests to stderr")
 	if _, err := parse(fs, args); err != nil {
 		return err
@@ -81,7 +82,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 	defer closeRepo()
 	fmt.Printf("importing %s from %s\n", *ref, absGit)
-	res, err := gitimport.Run(ctx, r, absGit, *ref, *as, os.Stdout)
+	res, err := gitimport.Run(ctx, r, absGit, *ref, *as, *force, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -157,7 +158,8 @@ Try it (in another terminal):
   claude mcp add kudzu -e KUDZU_REMOTE=%s -- kudzu mcp
 
 Press Ctrl-C to stop.
-`, res.Commits, res.Imported, *as, res.Tip.Short(), serverAddr, cacheAddr, remote, *dir, remote, remote)
+`, res.Commits, res.Imported, *as, res.Ref.Short(), serverAddr, cacheAddr, remote, *dir, remote, remote)
+	warnKept(os.Stderr, "up", res, *as, *ref, absGit, "--store "+filepath.Join(*dir, "store"))
 
 	<-ctx.Done()
 	wg.Wait()

@@ -19,7 +19,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 
-No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C.
+No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C. Restarting it keeps what you landed on `main`: it warns instead of moving `main` back to the git tip.
 
 ## Cheat sheet
 

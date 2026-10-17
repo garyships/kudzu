@@ -156,7 +156,8 @@ Changesets record only what changed. Root trees, per-path history, a commit-grap
 <summary>Server, regional cache and node daemon as separate processes</summary>
 
 ```bash
-# import an existing git repo (re-run any time; only new commits are ingested)
+# import an existing git repo (re-run any time: only new commits are ingested,
+# and main only fast-forwards, so work landed in Kudzu is never rewound)
 kudzu import --store ./data --git /path/to/repo --as main
 # ...and keep a git mirror of what lands in Kudzu (also incremental)
 kudzu export --store ./data --git /path/to/mirror.git --ref main

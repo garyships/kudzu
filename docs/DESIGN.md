@@ -185,6 +185,7 @@ The post's migration used a one-way git-to-Scion ingestion pipeline; Kudzu's imp
 - Kudzu diffs the two git trees itself, skipping equal subtrees, to get changes relative to the first parent.
 - New blobs are hashed, compressed and stored on a worker pool.
 - The `mapping` table records git sha → changeset, so re-running the import only ingests new commits. That makes it usable for continuously mirroring a git repository.
+- The Kudzu ref moves to the imported tip only as a fast-forward (by compare-and-swap): when it does not exist yet, or when it is an ancestor of the tip. `kudzu up` re-imports on every start, and changesets landed in Kudzu since the last import are not in git, so a ref that has them is left where it is with a warning. To keep them, `kudzu export` them to a git branch, merge it in git and import again (the exported commits map back to the same changesets, so the merge fast-forwards the ref); `--force` moves the ref anyway.
 - Shallow-clone boundary commits start history.
 
 Tests check that every imported commit's tree (modes, symlinks, file/directory swaps, merges) matches `git ls-tree`, and that first-parent blame matches `git blame --first-parent` line by line.

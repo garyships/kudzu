@@ -185,6 +185,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 自己对比两棵 git tree（哈希相同的子树跳过），得到相对第一父节点的改动
 - 新 blob 在 worker 池里并行做哈希、压缩、写入
 - `mapping` 表记录 git sha 到 changeset 的对应关系，重复执行只导入新提交，所以可以用来持续镜像一个 git 仓库
+- Kudzu 的 ref 只会快进到导入的最新提交（用 compare-and-swap）：ref 还不存在，或者它是新提交的祖先时才移动。`kudzu up` 每次启动都会重新导入，而上次导入之后在 Kudzu 里 land 的 changeset 不在 git 里，所以带着这些 changeset 的 ref 会保持原样，并打印警告。想保留它们，就用 `kudzu export` 导出到一个 git 分支，在 git 里合并后再导入（导出的提交会映射回同一批 changeset，所以合并结果能让 ref 快进）；`--force` 则强制移动 ref
 - shallow clone 的边界提交会被当作历史的起点
 
 **导出（`internal/gitexport`）**方向相反：agent 在 Kudzu 里工作的同时，团队现有的 git 工具（代码托管、clone 仓库的 CI、代码搜索）可以继续对着一个镜像运行。`kudzu export --store DIR --git mirror.git --ref main`：
