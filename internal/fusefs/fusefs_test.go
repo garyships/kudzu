@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"math/rand"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -34,7 +35,9 @@ var files = map[string]string{
 
 // mount serves files from a server and mounts main at a temporary
 // directory, skipping the test where FUSE is unavailable.
-func mount(t *testing.T) (string, *vfs.FS) {
+func mount(t *testing.T) (string, *vfs.FS) { return mountFiles(t, files, nil) }
+
+func mountFiles(t *testing.T, files map[string]string, cache store.Objects) (string, *vfs.FS) {
 	t.Helper()
 	ctx := context.Background()
 	r := repo.New(storetest.Meta(t), &store.Cached{Mem: store.NewMem(16 << 20), Backing: storetest.Objects(t)})
@@ -58,7 +61,7 @@ func mount(t *testing.T) (string, *vfs.FS) {
 	srv := httptest.NewServer(server.New(r, log.New(io.Discard, "", 0)).Handler())
 	t.Cleanup(srv.Close)
 	rem, _ := proto.Dial(srv.URL)
-	v, err := vfs.Open(ctx, rem, "main", nil, nil)
+	v, err := vfs.Open(ctx, rem, "main", nil, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,5 +141,20 @@ func TestMount(t *testing.T) {
 	// The mount is read-only.
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x"), 0o644); err == nil {
 		t.Fatal("wrote to a read-only mount")
+	}
+}
+
+// TestMountLargeFile: cat reads a file in chunks; a file larger than the
+// object cache must still be fetched once, not once per chunk.
+func TestMountLargeFile(t *testing.T) {
+	raw := make([]byte, 3<<20) // 3 MiB that does not compress
+	rand.New(rand.NewSource(1)).Read(raw)
+	big := string(raw)
+	dir, v := mountFiles(t, map[string]string{"big.txt": big}, store.NewMem(1<<20))
+	if got := sh(t, dir, "cat", "big.txt"); got != big {
+		t.Fatalf("cat returned %d bytes, want %d", len(got), len(big))
+	}
+	if st := v.Stats(); st.BlobsFetched != 1 {
+		t.Fatalf("reading a 3 MiB file fetched it %d times", st.BlobsFetched)
 	}
 }
