@@ -37,13 +37,14 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 
 ## Build and test
 
-Go 1.24+. `git` is only needed for `kudzu import`, `kudzu export` and their tests.
+Go 1.26+ (the oldest release that still gets security fixes). `git` is only needed for `kudzu import`, `kudzu export` and their tests.
 
 ```bash
 go build -o kudzu ./cmd/kudzu      # the binary (ignored by .gitignore)
 gofmt -l .                         # must print nothing
 go vet ./...
-go test -race ./...                # what CI runs, together with the two above
+go test -race ./...                # what CI runs, together with the two above, on Go 1.26.x and stable
+staticcheck ./...                  # CI also runs staticcheck 2026.2.1 and govulncheck
 go test -race ./internal/mcp/      # one package
 go vet -tags fuse ./... && go test -tags fuse ./internal/fusefs/   # kudzu mount (needs /dev/fuse)
 ```
@@ -68,8 +69,8 @@ KUDZU_REMOTE=127.0.0.1:7070 ./kudzu log -n 5 --oneline
 
 ## Conventions
 
-- Keep `gofmt`, `go vet` and `go test -race ./...` clean. New behavior gets a test; cross-tier behavior belongs in `internal/e2e`, which shows how to start the whole stack in-process.
-- No new dependencies without a strong reason. Today the direct ones are `modernc.org/sqlite` (pure Go, no cgo), `github.com/jackc/pgx/v5` (Postgres) and the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, plus its `jsonschema-go`). S3 is spoken directly (`store/s3.go`), not through an SDK. Keep `go.mod` buildable with Go 1.24.
+- Keep `gofmt`, `go vet`, `staticcheck` and `go test -race ./...` clean. CI also runs every test on macOS and builds, vets and tests the platform-neutral packages on Windows, so guard OS-specific code with build tags (`GOOS=windows go vet ./...` checks it locally). New behavior gets a test; cross-tier behavior belongs in `internal/e2e`, which shows how to start the whole stack in-process.
+- No new dependencies without a strong reason. Today the direct ones are `modernc.org/sqlite` (pure Go, no cgo), `github.com/jackc/pgx/v5` (Postgres) and the official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`, plus its `jsonschema-go`). S3 is spoken directly (`store/s3.go`), not through an SDK. Keep `go.mod` on the oldest Go release that still gets security fixes (1.26 today), and its modules free of what govulncheck reports.
 - The client stays thin: history, blame, merges and rebases belong on the server (`internal/repo`), exposed through `internal/server` and called through `proto.Remote`.
 - Objects are immutable and content-addressed, and the stored form is the same on every tier. Don't add per-tier formats.
 - Commands print human-readable output by default. Query and commit commands also take `--json`; when you add output, add it to the JSON form too and keep stdout free of anything else.

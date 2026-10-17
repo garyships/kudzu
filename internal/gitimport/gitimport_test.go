@@ -135,7 +135,7 @@ func TestImportMatchesGit(t *testing.T) {
 	dir := buildGitRepo(t)
 	r := newRepo(t)
 	ctx := context.Background()
-	res, err := Run(ctx, r, dir, "main", "main", nil)
+	res, err := Run(ctx, r, dir, "main", "main", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestImportMatchesGit(t *testing.T) {
 	// Re-importing after a new commit only ingests the new commit.
 	writeFile(t, dir, "new.txt", "new\n", 0o644)
 	commitAll(t, dir, "one more")
-	res2, err := Run(ctx, r, dir, "main", "main", nil)
+	res2, err := Run(ctx, r, dir, "main", "main", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,5 +196,81 @@ func TestImportMatchesGit(t *testing.T) {
 	tip2, _ := r.Meta.GetRef(ctx, "main")
 	if !bytes.Equal(tip2[:], res2.Tip[:]) {
 		t.Fatal("ref not advanced")
+	}
+}
+
+// TestReimportKeepsLandedWork re-runs the import, as `kudzu up` does on every
+// start, after a change landed through Kudzu: the ref must not move back to
+// the git tip unless that is a fast-forward or forced.
+func TestReimportKeepsLandedWork(t *testing.T) {
+	dir := buildGitRepo(t)
+	r := newRepo(t)
+	ctx := context.Background()
+	main := func() object.ID {
+		id, err := r.Meta.GetRef(ctx, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	first, err := Run(ctx, r, dir, "main", "main", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.RefMoved || first.Kept || first.Ref != first.Tip || main() != first.Tip {
+		t.Fatalf("first import = %+v", first)
+	}
+
+	blob, _ := r.WriteBlob(ctx, []byte("landed\n"))
+	landed, err := r.Create(ctx, repo.CreateRequest{Parents: []object.ID{first.Tip}, Author: "agent", Message: "land through kudzu",
+		Changes: []object.Change{{Path: "VERSION", Mode: object.ModeFile, Blob: blob}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Land(ctx, landed.ID, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing new in git: main keeps the landed changeset.
+	again, err := Run(ctx, r, dir, "main", "main", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := main(); got != landed.ID {
+		t.Fatalf("re-import moved main from the landed %s back to %s", landed.ID.Short(), got.Short())
+	}
+	if again.RefMoved || !again.Kept || again.Diverged || again.Ref != landed.ID || again.Tip != first.Tip {
+		t.Fatalf("re-import = %+v", again)
+	}
+
+	// New git commits that lack the landed change: the two have diverged.
+	writeFile(t, dir, "git.txt", "git\n", 0o644)
+	commitAll(t, dir, "git work")
+	div, err := Run(ctx, r, dir, "main", "main", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := main(); got != landed.ID || div.Imported != 1 || div.RefMoved || !div.Kept || !div.Diverged || div.Ref != landed.ID {
+		t.Fatalf("diverged re-import = %+v, main at %s", div, got.Short())
+	}
+
+	// Forcing moves it anyway.
+	forced, err := Run(ctx, r, dir, "main", "main", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := main(); got != div.Tip || !forced.RefMoved || forced.Kept || forced.Imported != 0 {
+		t.Fatalf("forced re-import = %+v, main at %s", forced, got.Short())
+	}
+
+	// A fast-forward needs no force.
+	writeFile(t, dir, "more.txt", "more\n", 0o644)
+	commitAll(t, dir, "more git work")
+	ff, err := Run(ctx, r, dir, "main", "main", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := main(); got != ff.Tip || !ff.RefMoved || ff.Kept || ff.Imported != 1 {
+		t.Fatalf("fast-forward import = %+v, main at %s", ff, got.Short())
 	}
 }

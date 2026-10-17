@@ -74,10 +74,15 @@ func mountFiles(t *testing.T, files map[string]string, cache store.Objects) (str
 	return dir, v
 }
 
+// sh runs a command in dir, a mountpoint this process serves. The child must
+// not touch the mount before it has exec'd: os/exec starts it with vfork, so
+// the forking thread waits in a raw syscall the Go runtime cannot preempt,
+// and a garbage collection starting then would stop the goroutines serving
+// the child's request and never finish. So a shell started elsewhere enters
+// dir and then runs the command.
 func sh(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = dir
+	cmd := exec.Command("/bin/sh", append([]string{"-c", `cd "$0" && exec "$@"`, dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v: %v\n%s", args, err, out)

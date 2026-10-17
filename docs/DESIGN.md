@@ -61,7 +61,7 @@ With the local defaults there is one authoritative server process. `kudzu server
 - **Postgres** holds the same four tables. A ref moves by `UPDATE refs … WHERE name = $1 AND target = $old` and checks the rows affected, so lands on different servers race exactly as they do in one process: the loser rebases and retries. Derived data is `INSERT … ON CONFLICT DO NOTHING`, since every server computes the same value. The one subtlety is the log: a sequence hands out `seq` at insert time, not commit time, so two concurrent appends could commit out of order and a `/api/wal` reader could skip one. Appends therefore take a transaction-scoped advisory lock around a single-row insert, which keeps commit order equal to log order.
 - **S3-compatible buckets** hold objects under `prefix/ab/cdef…`. Objects are immutable, so servers never coordinate over them, and each server's memory cache can keep any object indefinitely. Kudzu signs requests itself (AWS Signature Version 4, checked against AWS's published examples), so there is no cloud SDK dependency. `gs://` uses GCS's S3-compatible XML API with HMAC keys; `?endpoint=` points at MinIO, R2 or anything else S3-compatible. gc's touch is a server-side copy of an object onto itself, which refreshes `Last-Modified` without moving data.
 
-The repo and end-to-end tests run against these backends too when `KUDZU_TEST_POSTGRES` and `KUDZU_TEST_S3` are set (`internal/store/storetest`); CI does this with Postgres and MinIO.
+The repo and end-to-end tests run against these backends too when `KUDZU_TEST_POSTGRES` and `KUDZU_TEST_S3` are set (`internal/store/storetest`); CI does this with Postgres and SeaweedFS's S3 gateway.
 
 ### Garbage collection (`internal/repo/gc.go`)
 
@@ -86,7 +86,7 @@ type Deriver struct {
 }
 ```
 
-`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key.
+`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key. A shared computation runs detached from the caller that started it, so one caller hanging up (say, during a large blame) doesn't fail the others waiting for the same value, and a panic in `Compute` becomes every waiter's error instead of leaving the key stuck.
 
 | Name | Key | Value | Used for | Default |
 |---|---|---|---|---|
@@ -159,6 +159,7 @@ Every tier closes keep-alive connections that have been idle for two minutes, bu
 - Everything that isn't an object request (`/api/*`, uploads) is proxied upstream, so all tiers look the same to a client.
 - A daemon can start from a snapshot (`--seed`, produced by `kudzu snapshot`) and then fetch only what changed, as the post's daemons start from a periodically refreshed snapshot.
 - `/stats` reports hit rate, coalesced misses and upstream traffic.
+- Whoever can connect to a tier can use the whole API through it, so a unix socket is created mode 0600 (owner only); `--socket-mode 0660` or `0666` shares a daemon deliberately. The default socket, `/tmp/kudzu.sock`, sits in a directory every user can write to, so whoever binds it first would receive every job's requests. `proto.Dial` therefore refuses, after connecting and before sending anything, a socket in a world-writable directory that is owned by neither the current user nor root (`internal/proto/socket_unix.go`). A shared daemon belongs in a directory that is not world-writable. The daemon's objects default to a per-user directory (`<user cache dir>/kudzu/daemon`, created 0700) rather than a fixed path in the temp directory.
 
 ## 8. Client (`internal/client`)
 
@@ -191,6 +192,7 @@ The post's migration used a one-way git-to-Scion ingestion pipeline; Kudzu's imp
 - Kudzu diffs the two git trees itself, skipping equal subtrees, to get changes relative to the first parent.
 - New blobs are hashed, compressed and stored on a worker pool.
 - The `mapping` table records git sha → changeset, so re-running the import only ingests new commits. That makes it usable for continuously mirroring a git repository.
+- The Kudzu ref moves to the imported tip only as a fast-forward (by compare-and-swap): when it does not exist yet, or when it is an ancestor of the tip. `kudzu up` re-imports on every start, and changesets landed in Kudzu since the last import are not in git, so a ref that has them is left where it is with a warning. To keep them, `kudzu export` them to a git branch, merge it in git and import again (the exported commits map back to the same changesets, so the merge fast-forwards the ref); `--force` moves the ref anyway.
 - Shallow-clone boundary commits start history.
 
 Tests check that every imported commit's tree (modes, symlinks, file/directory swaps, merges) matches `git ls-tree`, and that first-parent blame matches `git blame --first-parent` line by line.
@@ -210,8 +212,8 @@ The post describes permissions on individual directories, so sensitive code can 
 
 - **Authentication.** Every request but `/healthz` carries `Authorization: Bearer <token>`. The policy stores only SHA-256 hashes of tokens (`kudzu token` makes one), mapping each to a principal. Requests without a token use the optional `anonymous` principal, or get 401.
 - **Rules.** Each principal has `read`, `write` and `deny` path prefixes and `land` refs. The longest matching prefix decides; at equal length deny beats write beats read. So `"read": [""], "deny": ["secrets"], "write": ["services/api"]` reads everything but `secrets/` and writes only `services/api/`.
-- **Reads.** `cat`, `blame`, `ls`, `diff` and `log` with a path check read access and answer 403 naming the path. Listings, diffs, change lists and the WAL drop entries the caller may not read; a changeset that only touched such paths is hidden from `log`.
-- **Writes.** Write checks happen inside `repo.Create` (through `repo.WithChangeCheck`), so they cover exactly the paths each new changeset changes, whether the server creates it for a commit, a rebase, a merge or a land's rebase. Moving a ref (land or compare-and-swap) needs a `land` entry for it.
+- **Reads.** `cat`, `blame`, `ls`, `diff` and `log` with a path check read access and answer 403 naming the path. Listings, diffs and change lists drop entries the caller may not read; a changeset that only touched such paths is hidden from `log`, and appears in the WAL only as `{seq, id, hidden: true}` so a reader's cursor still advances.
+- **Writes.** Write checks happen inside `repo.Create` (through `repo.WithChangeCheck`), so they cover every path each new changeset lists, whether the server creates it for a commit, a rebase, a merge or a land's rebase. Paths are checked before no-op changes are dropped, so a write cannot confirm a guess of what an unreadable file holds. Moving a ref (land or compare-and-swap) needs a `land` entry for it, and `repo.MoveRef` also checks every path whose content differs between the ref's old and new tree: a fast-forward to someone else's changeset, a merge whose first parent is unrelated, or a rollback changes the ref's content as much as a new changeset does. A refused path the caller may not even read is not named, and merge and rebase conflicts leave such paths out (with a count), so writes cannot be used to list hidden files.
 - **Objects.** This is the hard part: objects are content-addressed and fetched by ID from any tier, with no path attached. Kudzu's answer is that a caller can only fetch what it can name, so it never learns the ID of anything it may not read. Wherever the API returns a tree (resolve, show, ls, create, rebase, merge, snapshot), a caller with restricted read access gets a *filtered tree*: the same directory with unreadable entries removed, written as an ordinary tree object. Clients verify it like any other, so clone, update, commit and land work unchanged on a filtered view. Subtrees the caller may read in full keep their real IDs, so filtering costs only the directories along rule boundaries, and the results are cached per principal. Commits are still made against the real changeset, so landing from a filtered checkout keeps the files the caller cannot see.
 - **Tiers.** Caches and daemons forward each client's token on `/api/*` and uploads, and fetch objects upstream with their own `KUDZU_TOKEN`. They serve cached objects to whoever can reach them, which under this model only exposes what callers can already name. The remaining leak is an existence oracle: someone who can guess a file's exact content can confirm the repository holds it.
 

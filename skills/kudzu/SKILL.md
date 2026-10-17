@@ -20,7 +20,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Paths:** no path may contain a `.git` or `.kudzu` directory, in any case and at any depth; the server answers 400. A git checkout nested in a working copy is ignored by `status` and `commit -A`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 
-No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C.
+No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C. Restarting it keeps what you landed on `main`: it warns instead of moving `main` back to the git tip. If a command refuses that socket because another user owns it, start your own with `kudzu up --socket PATH` and set `KUDZU_REMOTE=unix://PATH`.
 
 ## Cheat sheet
 

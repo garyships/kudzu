@@ -9,17 +9,57 @@ permissions:
   contents: read
 
 jobs:
+  # The oldest Go that go.mod allows, at its latest patch release, and the
+  # current stable release. go.mod follows the oldest Go release that still
+  # gets security fixes.
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26.x", "stable"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - run: go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
+      - run: staticcheck ./... && staticcheck -tags fuse ./...
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - run: govulncheck ./...
+
+  # Releases ship macOS and Windows binaries too. macOS runs every test;
+  # Windows builds and vets everything and tests the packages that do not
+  # depend on unix sockets, symlinks or exec bits.
+  other-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - run: go build ./...
+      - run: go vet ./...
+      - if: runner.os == 'macOS'
+        run: go test ./...
+      - if: runner.os == 'Windows'
+        run: go test ./internal/object/ ./internal/textdiff/ ./internal/sparse/ ./internal/lru/ ./internal/auth/
 
   # kudzu mount (FUSE) is only built with -tags fuse.
   fuse:
@@ -28,14 +68,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.x"
       - run: sudo apt-get update && sudo apt-get install -y fuse3
       - run: go vet -tags fuse ./...
       - run: go build -tags fuse ./cmd/kudzu
       - run: go test -race -tags fuse ./internal/fusefs/ ./internal/vfs/
 
   # The repo, end-to-end and store tests again, against the shared backends
-  # several servers use: Postgres for metadata and S3 (MinIO) for objects.
+  # several servers use: Postgres for metadata and S3 (SeaweedFS) for objects.
   backends:
     runs-on: ubuntu-latest
     services:
@@ -48,20 +88,26 @@ jobs:
           --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       KUDZU_TEST_POSTGRES: postgres://postgres:kudzu@127.0.0.1:5432/postgres?sslmode=disable
-      KUDZU_TEST_S3: s3://kudzu-test?endpoint=http://127.0.0.1:9000
+      KUDZU_TEST_S3: s3://kudzu-test?endpoint=http://127.0.0.1:8333
       AWS_ACCESS_KEY_ID: kudzu
       AWS_SECRET_ACCESS_KEY: kudzu-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-      - name: start MinIO
+          go-version: "1.26.x"
+      # MinIO no longer publishes images. SeaweedFS's S3 gateway takes the
+      # keys above; curl signs the request that creates the bucket.
+      - name: start SeaweedFS
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID -e MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
-            minio/minio server /data
-          for i in $(seq 60); do curl -sf http://127.0.0.1:9000/minio/health/ready && break; sleep 1; done
-          docker run --rm --network host --entrypoint sh minio/mc -c \
-            "mc alias set local http://127.0.0.1:9000 $AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY && mc mb local/kudzu-test"
+          cat > "$RUNNER_TEMP/s3.json" <<EOF
+          {"identities": [{"name": "kudzu", "credentials": [{"accessKey": "$AWS_ACCESS_KEY_ID", "secretKey": "$AWS_SECRET_ACCESS_KEY"}], "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+          EOF
+          docker run -d --name seaweedfs -p 8333:8333 -v "$RUNNER_TEMP/s3.json:/etc/seaweedfs/s3.json:ro" \
+            chrislusf/seaweedfs:4.48 server -s3 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=64
+          sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
+          for i in $(seq 90); do curl -sf "${sign[@]}" -X PUT http://127.0.0.1:8333/kudzu-test && break; sleep 1; done
+          curl -sSf "${sign[@]}" -o /dev/null "http://127.0.0.1:8333/kudzu-test?list-type=2"
       - run: go test -race ./internal/store/... ./internal/repo/ ./internal/e2e/
+      - if: failure()
+        run: docker logs seaweedfs
