@@ -10,10 +10,13 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/garyships/kudzu/internal/client"
+	"github.com/garyships/kudzu/internal/vfs"
 )
 
 // Working copy tools act on a checkout on the machine running the MCP server
-// and talk to the remote recorded in that checkout.
+// and talk to the remote recorded in that checkout. Inside a writable mount
+// (kudzu mount --writable) they act on the mount's overlay instead, through
+// its control socket.
 
 type wcIn struct {
 	Dir string `json:"dir,omitempty" jsonschema:"Directory inside the working copy. Use an absolute path; relative paths resolve against the MCP server's working directory. Default: that directory."`
@@ -31,6 +34,19 @@ func openWC(dir string) (*client.WC, error) {
 func (k *kudzu) wcStatusTool(ctx context.Context, in wcIn) (*sdk.CallToolResult, error) {
 	k.wcMu.Lock()
 	defer k.wcMu.Unlock()
+	if m, ok := vfs.FindMount(orDefault(in.Dir, ".")); ok {
+		st, err := m.Status(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return jsonResult(map[string]any{
+			"root":      m.Info.Root,
+			"remote":    m.Info.Remote,
+			"changeset": st.Changeset,
+			"mount":     true,
+			"files":     st.Files,
+		}), nil
+	}
 	wc, err := openWC(in.Dir)
 	if err != nil {
 		return nil, err
@@ -74,6 +90,27 @@ func (k *kudzu) wcCommitTool(ctx context.Context, in wcCommitIn) (*sdk.CallToolR
 	}
 	k.wcMu.Lock()
 	defer k.wcMu.Unlock()
+	if m, ok := vfs.FindMount(orDefault(in.Dir, ".")); ok {
+		res, err := m.Commit(ctx, in.Message, orDefault(in.Author, k.author), in.Land)
+		if paths, ok := asConflict(err); ok {
+			return nil, &conflictError{
+				what:  fmt.Sprintf("could not land on %s", in.Land),
+				paths: paths,
+				hint:  "The mount is unchanged and still holds your edits. Commit without land, update the mount to " + in.Land + " with force after saving your edits elsewhere, or re-read the conflicting paths at " + in.Land + " and edit them again",
+			}
+		}
+		if err != nil && strings.Contains(err.Error(), vfs.ErrNothingToCommit.Error()) {
+			return nil, errors.New("nothing to commit: no file in the mount changed")
+		}
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"changeset": res.ID, "changes": res.Changes, "now_at": res.Base}
+		if res.Land != nil {
+			out["land"] = landView(in.Land, res.Land)
+		}
+		return jsonResult(out), nil
+	}
 	wc, err := openWC(in.Dir)
 	if err != nil {
 		return nil, err
@@ -108,6 +145,17 @@ type wcUpdateIn struct {
 func (k *kudzu) wcUpdateTool(ctx context.Context, in wcUpdateIn) (*sdk.CallToolResult, error) {
 	k.wcMu.Lock()
 	defer k.wcMu.Unlock()
+	if m, ok := vfs.FindMount(orDefault(in.Dir, ".")); ok {
+		before, err := m.Base(ctx)
+		if err != nil {
+			return nil, err
+		}
+		id, err := m.Update(ctx, orDefault(in.Rev, "main"), false)
+		if err != nil {
+			return nil, err
+		}
+		return jsonResult(map[string]any{"previous": before, "changeset": id}), nil
+	}
 	wc, err := openWC(in.Dir)
 	if err != nil {
 		return nil, err

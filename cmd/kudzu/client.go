@@ -18,7 +18,12 @@ import (
 	"github.com/garyships/kudzu/internal/proto"
 	"github.com/garyships/kudzu/internal/repo"
 	"github.com/garyships/kudzu/internal/sparse"
+	"github.com/garyships/kudzu/internal/vfs"
 )
+
+// inMount returns the writable mount (kudzu mount --writable) the current
+// directory is in, if any.
+func inMount() (*vfs.MountClient, bool) { return vfs.FindMount(".") }
 
 // cwdWC is the working copy containing the current directory, opened on
 // first use and at most once per command: opening one loads its whole
@@ -37,7 +42,8 @@ func (c *cwdWC) get() *client.WC {
 	return c.wc
 }
 
-// dialRemote picks the remote from the flag, $KUDZU_REMOTE, or the working copy.
+// dialRemote picks the remote from the flag, $KUDZU_REMOTE, the writable
+// mount or the working copy.
 func dialRemote(flagValue string) (*proto.Remote, error) {
 	return new(cwdWC).dialRemote(flagValue)
 }
@@ -49,16 +55,25 @@ func (c *cwdWC) dialRemote(flagValue string) (*proto.Remote, error) {
 	if env := os.Getenv("KUDZU_REMOTE"); env != "" {
 		return proto.Dial(env)
 	}
+	if m, ok := inMount(); ok {
+		return proto.Dial(m.Info.Remote)
+	}
 	if wc := c.get(); wc != nil {
 		return wc.Remote, nil
 	}
 	return nil, errors.New("no remote: pass --remote, set KUDZU_REMOTE, or run inside a working copy")
 }
 
-// defaultRev is the working copy's changeset when inside one, else main.
+// defaultRev is the checked-out changeset when inside a working copy or a
+// writable mount, else main.
 func (c *cwdWC) defaultRev(rev string) string {
 	if rev != "" {
 		return rev
+	}
+	if m, ok := inMount(); ok {
+		if id, err := m.Base(context.Background()); err == nil {
+			return id.String()
+		}
 	}
 	if wc := c.get(); wc != nil && !wc.State.Changeset.IsZero() {
 		return wc.State.Changeset.String()
@@ -82,6 +97,9 @@ func defaultAuthor(flagValue string) string {
 }
 
 func openWC() (*client.WC, error) {
+	if m, ok := inMount(); ok {
+		return nil, fmt.Errorf("%s is a writable kudzu mount, not a working copy: status, diff, commit, update and land work here, this command does not", m.Info.Root)
+	}
 	wc, err := client.Open(".")
 	if err != nil {
 		return nil, err
@@ -127,6 +145,23 @@ func cmdStatus(ctx context.Context, args []string) error {
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
+	if m, ok := inMount(); ok {
+		st, err := m.Status(ctx)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			out := statusJSON{Changeset: st.Changeset, Files: []fileStatusJSON{}}
+			for _, f := range st.Files {
+				out.Files = append(out.Files, fileStatusJSON{f.Path, f.Status})
+			}
+			return printJSON(out)
+		}
+		for _, f := range st.Files {
+			fmt.Printf("%s %s\n", f.Status, f.Path)
+		}
+		return nil
+	}
 	wc, err := openWC()
 	if err != nil {
 		return err
@@ -163,6 +198,28 @@ func cmdCommit(ctx context.Context, args []string) error {
 	}
 	if *msg == "" {
 		return errors.New("a message is required (-m)")
+	}
+	if m, ok := inMount(); ok {
+		res, err := m.Commit(ctx, *msg, defaultAuthor(*author), *land)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			out := struct {
+				ID      object.ID `json:"id"`
+				Changes int       `json:"changes"`
+				Land    *landJSON `json:"land,omitempty"`
+			}{ID: res.ID, Changes: res.Changes}
+			if res.Land != nil {
+				out.Land = &landJSON{*land, res.Land}
+			}
+			return printJSON(out)
+		}
+		fmt.Printf("created %s (%s)\n", res.ID.Short(), plural(res.Changes, "file", "files"))
+		if res.Land != nil {
+			printLand(res.Land, *land)
+		}
+		return nil
 	}
 	wc, err := openWC()
 	if err != nil {
@@ -210,6 +267,14 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	if len(pos) == 1 {
 		*rev = pos[0]
 	}
+	if m, ok := inMount(); ok {
+		id, err := m.Update(ctx, *rev, *force)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("at %s\n", id.Short())
+		return nil
+	}
 	wc, err := openWC()
 	if err != nil {
 		return err
@@ -245,6 +310,17 @@ func cmdLand(ctx context.Context, args []string) error {
 	addJSONFlag(fs)
 	if _, err := parse(fs, args); err != nil {
 		return err
+	}
+	if m, ok := inMount(); ok {
+		res, err := m.Land(ctx, *ref)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printJSON(landJSON{*ref, res})
+		}
+		printLand(res, *ref)
+		return nil
 	}
 	wc, err := openWC()
 	if err != nil {
@@ -508,6 +584,33 @@ func cmdDiff(ctx context.Context, args []string) error {
 		return err
 	}
 	if *from == "" && *to == "" {
+		if m, ok := inMount(); ok {
+			files, patch, err := m.Diff(ctx)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				out := struct {
+					Files []fileStatusJSON `json:"files"`
+					Patch string           `json:"patch,omitempty"`
+				}{Files: []fileStatusJSON{}}
+				for _, f := range files {
+					out.Files = append(out.Files, fileStatusJSON{f.Path, f.Status})
+				}
+				if !*stat {
+					out.Patch = patch
+				}
+				return printJSON(out)
+			}
+			if *stat {
+				for _, f := range files {
+					fmt.Printf("%s %s\n", f.Status, f.Path)
+				}
+				return nil
+			}
+			fmt.Print(patch)
+			return nil
+		}
 		if wc, err := openWC(); err == nil {
 			if jsonOutput {
 				return localDiffJSON(ctx, wc, *stat)

@@ -35,7 +35,7 @@ func (k *kudzu) addWriteTools(s *sdk.Server) {
 	}, k.rebaseTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_wc_commit",
-		Description: "Commit the local changes of a Kudzu working copy on this machine as a new changeset (uploading only file contents the server lacks), optionally landing it on a ref in the same call. On a conflict nothing changes locally; see the error for how to resolve it.",
+		Description: "Commit the local changes of a Kudzu working copy on this machine as a new changeset (uploading only file contents the server lacks), optionally landing it on a ref in the same call. On a conflict nothing changes locally; see the error for how to resolve it. Also commits the changes made in a writable mount (kudzu mount --writable).",
 		Annotations: additive("Commit working copy", false),
 	}, k.wcCommitTool)
 	addTool(s, &sdk.Tool{

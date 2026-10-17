@@ -179,7 +179,9 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 目录第一次被列出、或者第一次有路径经过它时，才取它的 tree 对象；文件第一次被读时，才取它的 blob。都通过对象协议（通常是节点 daemon）获取，像其他对象一样校验，并放进本地缓存（内存，或 `--cache DIR`）。同一对象的并发读取共用一次请求。
 - tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端读取它本来就有的 blob），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
 - 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
-- `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。可写挂载（`kudzu commit` 读取的 overlay）留待以后。
+- `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。
+
+**可写挂载**（`kudzu mount --writable`）用 overlayfs 的方式保存改动（`internal/vfs/overlay.go`）：版本本身是按需获取的下层；写过或新建的文件完整地放在 overlay 目录里；删除的路径记成 whiteout。写文件前先把它复制上来（只取这一个 blob）；新建、删除、重命名文件，`mkdir`、符号链接、`chmod +x`、截断都支持，所以编辑器、`sed -i`、`cp`、`mv` 都能正常用。重命名一个在版本里有文件的目录会返回 `EXDEV`，`mv` 会改用复制。changeset 里不能有的名字（比如任何一级的 `.git`）会返回 `EINVAL`：commit 和 update 会清空 overlay，嵌套的 git 仓库会丢失，需要的话请在工作区里建。挂载进程在一个私有的控制 socket 上提供 overlay，并在挂载根目录的只读文件 `.kudzu/mount.json` 里写明地址（`.kudzu` 是保留路径，不会和仓库内容冲突）。`kudzu status`、`diff`、`commit [--land]`、`update`、`land` 会从当前目录找到这个文件，在挂载里直接工作，不需要工作区：status 对比 overlay 和版本，不下载任何东西；commit 只上传服务端缺的 blob，创建 changeset，把它（或 land 后的结果）当作新版本并清空 overlay。有文件正在被写时 commit 会拒绝；有未提交改动时 update 会拒绝，除非 `--force`。overlay 比挂载活得久：再次挂载同一个 overlay 会接着之前的改动。
 
 测试会挂载一个版本，依次运行 `ls`、`ls -l`、`cat`、`grep -r`，每一步之后都检查只取了真正读到的对象。
 
