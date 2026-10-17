@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -103,21 +104,70 @@ func testObjects(t *testing.T, s gcObjects, age func(time.Duration)) {
 	}
 }
 
+// fsKinds opens each kind of FS: the server's, a bounded cache's and a
+// plain one's.
+var fsKinds = map[string]func(dir string) (*FS, error){
+	"durable": OpenDurableFS,
+	"bounded": func(dir string) (*FS, error) { return OpenFS(dir, 1<<20) },
+	"plain":   func(dir string) (*FS, error) { return OpenFS(dir, 0) },
+}
+
 func TestFSObjects(t *testing.T) {
-	dir := t.TempDir()
-	s, err := OpenFS(dir, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testObjects(t, s, func(d time.Duration) {
-		filepath.WalkDir(dir, func(p string, e os.DirEntry, err error) error {
-			if err == nil && !e.IsDir() {
-				old := time.Now().Add(-d)
-				os.Chtimes(p, old, old)
+	for name, open := range fsKinds {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := open(dir)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return nil
+			testObjects(t, s, func(d time.Duration) {
+				filepath.WalkDir(dir, func(p string, e os.DirEntry, err error) error {
+					if err == nil && !e.IsDir() {
+						old := time.Now().Add(-d)
+						os.Chtimes(p, old, old)
+					}
+					return nil
+				})
+			})
 		})
-	})
+	}
+}
+
+// A crash can leave an empty file where an object was being written. It is
+// not the object: Get, Has and Touch report it missing, so the object is
+// fetched or uploaded again, and Put replaces it.
+func TestFSEmptyFileIsMissing(t *testing.T) {
+	ctx := context.Background()
+	for name, open := range fsKinds {
+		t.Run(name, func(t *testing.T) {
+			s, err := open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, stored := object.EncodeObject(object.KindBlob, []byte("content\n"))
+			if err := os.WriteFile(s.path(id), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if b, err := s.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+				t.Errorf("get of an empty file = %q, %v; want ErrNotFound", b, err)
+			}
+			if ok, err := s.Has(ctx, id); ok || err != nil {
+				t.Errorf("has of an empty file = %v, %v", ok, err)
+			}
+			if err := s.Touch(ctx, id); !errors.Is(err, ErrNotFound) {
+				t.Errorf("touch of an empty file = %v; want ErrNotFound", err)
+			}
+			if err := s.Put(ctx, id, stored); err != nil {
+				t.Fatal(err)
+			}
+			if b, err := s.Get(ctx, id); err != nil || !bytes.Equal(b, stored) {
+				t.Fatalf("get after put = %q, %v", b, err)
+			}
+			if s.maxBytes > 0 && s.Size() != int64(len(stored)) {
+				t.Errorf("size = %d, want %d", s.Size(), len(stored))
+			}
+		})
+	}
 }
 
 func TestS3ObjectsFake(t *testing.T) {
