@@ -52,6 +52,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	dir := fs.String("dir", "", "data directory (default: a per-repository folder in your user cache dir)")
 	port := fs.Int("port", 7070, "server port; the regional cache uses port+1 (0 picks free ports)")
 	sock := fs.String("socket", defaultSocket(), "unix socket for the node daemon")
+	sockMode := addSocketModeFlag(fs)
 	force := fs.Bool("force", false, "move --as to the imported tip even if that drops changesets landed in kudzu")
 	verbose := fs.Bool("v", false, "log every tier's requests to stderr")
 	if _, err := parse(fs, args); err != nil {
@@ -104,7 +105,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		serverL.Close()
 		return fmt.Errorf("cache: %w (pass --port to use another one)", err)
 	}
-	daemonL, err := listen("unix://" + *sock)
+	daemonL, err := listen("unix://"+*sock, *sockMode)
 	if err != nil {
 		serverL.Close()
 		cacheL.Close()

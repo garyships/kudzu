@@ -154,6 +154,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 非对象请求（`/api/*`、上传）原样转发给上游，所以对客户端来说三层没有区别
 - daemon 可以用 `--seed` 从快照启动（`kudzu snapshot` 生成，内容是某个版本全部对象的帧流），之后只拉增量。对应文章里"daemon 从定期刷新的快照启动"
 - `/stats` 返回命中率、合并数、上游请求数
+- 能连上某一层的人就能通过它使用全部 API，所以 unix socket 创建时的权限是 0600（只有创建者能连），要共用 daemon 就显式加 `--socket-mode 0660` 或 `0666`。默认的 socket `/tmp/kudzu.sock` 所在目录人人可写，谁先绑定这个路径，谁就能收到所有任务的请求。因此 `proto.Dial` 连上之后、发送任何内容之前会检查：socket 在所有人可写的目录里，而属主既不是当前用户也不是 root，就拒绝使用（`internal/proto/socket_unix.go`）。多用户共用的 daemon 应该放在不是所有人可写的目录里。daemon 的对象目录默认放在每个用户自己的目录（`<用户缓存目录>/kudzu/daemon`，权限 0700），不再是临时目录里的固定路径
 
 ## 8. 客户端（`internal/client`）
 
