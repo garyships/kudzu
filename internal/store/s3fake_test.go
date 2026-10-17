@@ -42,12 +42,6 @@ func newFakeS3(t *testing.T) (*fakeS3, S3Config) {
 	return f, f.cfg
 }
 
-func (f *fakeS3) advance(d time.Duration) {
-	f.mu.Lock()
-	f.now = f.now.Add(d)
-	f.mu.Unlock()
-}
-
 func (f *fakeS3) fail(w http.ResponseWriter, status int, code string) {
 	w.WriteHeader(status)
 	fmt.Fprintf(w, "<Error><Code>%s</Code><Message>fake</Message></Error>", code)

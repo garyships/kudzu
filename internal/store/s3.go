@@ -33,7 +33,7 @@ import (
 type S3 struct {
 	cfg S3Config
 	hc  *http.Client
-	now func() time.Time
+	now func() time.Time // judges object ages; tests move it
 }
 
 // S3Config locates a bucket and holds credentials.
@@ -347,7 +347,9 @@ func (s *S3) request(ctx context.Context, method, key string, q url.Values, body
 	sum := sha256.Sum256(body)
 	req.Header.Set("X-Amz-Content-Sha256", hex.EncodeToString(sum[:]))
 	if s.cfg.AccessKey != "" {
-		signV4(req, s.cfg, rawPath, s.now())
+		// The real time, whatever s.now says: S3 refuses a signature
+		// more than 15 minutes off.
+		signV4(req, s.cfg, rawPath, time.Now())
 	}
 	return req, nil
 }
