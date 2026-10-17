@@ -49,6 +49,10 @@ func (r *Repo) getDerived(ctx context.Context, kind string, key object.ID) ([]by
 }
 
 func (r *Repo) putDerived(ctx context.Context, kind string, key object.ID, v []byte) error {
+	// Objects a value names (unodes, say) must be on disk before it is stored.
+	if err := store.Sync(r.Objs); err != nil {
+		return err
+	}
 	if err := r.Meta.PutDerived(ctx, kind, key, v); err != nil {
 		return err
 	}
@@ -62,7 +66,7 @@ func (r *Repo) Derive(ctx context.Context, d *Deriver, key object.ID) ([]byte, e
 	if v, ok, err := r.getDerived(ctx, d.Name, key); err != nil || ok {
 		return v, err
 	}
-	return r.flights.do(d.Name+key.String(), func() ([]byte, error) {
+	return r.flights.do(ctx, d.Name+" "+key.String(), func(ctx context.Context) ([]byte, error) {
 		type frame struct {
 			key      object.ID
 			parents  []object.ID
@@ -357,36 +361,54 @@ func (r *Repo) UnodeOf(ctx context.Context, id object.ID) (object.ID, error) {
 	return idValue(v), nil
 }
 
-// flightGroup collapses concurrent computations of the same key.
+// flightGroup collapses concurrent computations of the same key. The
+// computation runs on its own goroutine with a context that keeps the first
+// caller's values but not its cancellation, so a caller that gives up (a
+// client hanging up during a large blame) doesn't fail the others waiting for
+// the same value. Each caller stops waiting when its own context is done.
 type flightGroup struct {
 	mu sync.Mutex
 	m  map[string]*flight
 }
 
 type flight struct {
-	wg  sync.WaitGroup
-	val []byte
-	err error
+	done chan struct{} // closed once val and err are set
+	val  []byte
+	err  error
 }
 
-func (g *flightGroup) do(key string, fn func() ([]byte, error)) ([]byte, error) {
+func (g *flightGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = map[string]*flight{}
 	}
-	if f, ok := g.m[key]; ok {
-		g.mu.Unlock()
-		f.wg.Wait()
-		return f.val, f.err
+	f, ok := g.m[key]
+	if !ok {
+		f = &flight{done: make(chan struct{})}
+		g.m[key] = f
+		go g.run(context.WithoutCancel(ctx), key, f, fn)
 	}
-	f := &flight{}
-	f.wg.Add(1)
-	g.m[key] = f
 	g.mu.Unlock()
-	f.val, f.err = fn()
-	f.wg.Done()
-	g.mu.Lock()
-	delete(g.m, key)
-	g.mu.Unlock()
-	return f.val, f.err
+	select {
+	case <-f.done:
+		return f.val, f.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// run computes f's value and always releases its waiters and its key, even
+// if fn panics: the panic becomes every waiter's error, and the next call
+// for the key computes it afresh.
+func (g *flightGroup) run(ctx context.Context, key string, f *flight, fn func(context.Context) ([]byte, error)) {
+	defer func() {
+		if p := recover(); p != nil {
+			f.val, f.err = nil, fmt.Errorf("derive %s: panic: %v", key, p)
+		}
+		g.mu.Lock()
+		delete(g.m, key)
+		g.mu.Unlock()
+		close(f.done)
+	}()
+	f.val, f.err = fn(ctx)
 }

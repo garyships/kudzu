@@ -53,6 +53,7 @@ func Dial(addr string) (*Remote, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", sock)
 		}
+		tr.DialContext = checkedDial(sock, tr.DialContext)
 		r.base = "http://unix"
 		return r, nil
 	}

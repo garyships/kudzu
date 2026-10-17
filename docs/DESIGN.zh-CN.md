@@ -52,6 +52,8 @@ SQLite 的表结构：
 
 创建 changeset 只需要一次插入（如果已经存在，就只刷新 `created`）：不加锁、不需要跨服务器协调、不碰 ref。
 
+对象总是先于引用它们的元数据写入，所以服务端的对象必须扛得住断电。它的对象目录（`store.OpenDurableFS`）按批落盘：`Put` 只记下新写的对象，仓库在追加 changeset 或存派生数据之前调用 `store.Sync`，保证元数据引用的东西都已经在盘上。Linux 上一次 `syncfs(2)` 就能覆盖整批；其他平台逐个 fsync 记下的文件，再 fsync 它们的分片目录。这样每个 changeset 只同步一次，而不是每个对象两次，大规模导入的速度和完全不同步差不多。缓存和工作副本不做这些同步，丢了的对象再取一次就行。所有对象目录都把空文件当作不存在（存储形式的对象至少有两个字节的头部，空文件只可能是崩溃时没落盘的写入留下的），这样对象会被重新获取或上传，而不是以空内容返回。
+
 ### 多台服务端（`--meta`、`--objects`）
 
 默认配置下只有一个权威服务端进程。`kudzu server --meta postgres://… --objects s3://bucket/prefix` 把两种存储都放到共享服务里，于是可以在负载均衡后面跑任意多台无状态服务端，正是文章的设计：
@@ -59,7 +61,7 @@ SQLite 的表结构：
 - **Postgres** 用同样的四张表。移动 ref 是 `UPDATE refs … WHERE name = $1 AND target = $old` 再检查影响的行数，所以不同服务端上的 land 竞争方式和单进程完全一样：输的一方 rebase 后重试。派生数据用 `INSERT … ON CONFLICT DO NOTHING`，因为每台服务端算出的值都一样。唯一要注意的是日志：序列在插入时而不是提交时分配 `seq`，两个并发追加可能乱序提交，`/api/wal` 的读者就可能漏掉一条。所以追加时会在单行插入外面持有一个事务级 advisory lock，保证提交顺序就是日志顺序。
 - **兼容 S3 的存储桶**把对象存在 `prefix/ab/cdef…` 下。对象不可变，服务端之间不需要协调，每台服务端的内存缓存可以无限期保留任何对象。Kudzu 自己签名请求（AWS Signature V4，用 AWS 文档里的示例校验过），不依赖云厂商 SDK。`gs://` 走 GCS 兼容 S3 的 XML API（HMAC 密钥）；`?endpoint=` 可以指向 MinIO、R2 或其他兼容 S3 的服务。gc 的 touch 是把对象在服务端复制到自身，刷新 `Last-Modified` 而不传输数据。
 
-设置 `KUDZU_TEST_POSTGRES` 和 `KUDZU_TEST_S3` 后，repo 和端到端测试也会跑在这些后端上（`internal/store/storetest`）；CI 用 Postgres 和 MinIO 跑一遍。
+设置 `KUDZU_TEST_POSTGRES` 和 `KUDZU_TEST_S3` 后，repo 和端到端测试也会跑在这些后端上（`internal/store/storetest`）；CI 用 Postgres 和 SeaweedFS 的 S3 网关跑一遍。
 
 ### 垃圾回收（`internal/repo/gc.go`）
 
@@ -70,7 +72,7 @@ CAS 竞争失败后重试的 land、遇到冲突的 rebase、从没 land 的提�
 
 日志的位置永远不变：被删的条目在 `seq` 里留下空洞，`/api/wal` 的读者自然跳过，`since` 游标依然有效。用墓碑只会让日志无谓地增长。
 
-gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；重新追加的 changeset 会刷新 `created`；清除前会再检查一次每个候选对象的时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
+gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；changeset 被重新追加、被新 changeset 当作父节点、或者有 ref 移到它上面时，都会刷新 `created`。gc 扫完对象后，会再从 ref 和期间新追加的 changeset 标记一遍；删除 changeset 时先子后父，且只删仍然过期的，被 touch 过的会保留，连同它的祖先和它们需要的对象。对象删除前先移到一边、再检查一次时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
 
 ## 3. 派生数据引擎（`internal/repo/derive.go`）
 
@@ -84,7 +86,7 @@ type Deriver struct {
 }
 ```
 
-`Repo.Derive` 负责其余所有事情：查缓存、按需从最老的缺失祖先开始往前算（迭代实现，再长的历史也不会栈溢出）、把结果写回 `derived` 表、合并同一个 key 的并发计算。
+`Repo.Derive` 负责其余所有事情：查缓存、按需从最老的缺失祖先开始往前算（迭代实现，再长的历史也不会栈溢出）、把结果写回 `derived` 表、合并同一个 key 的并发计算。合并后的计算不受发起它的调用方取消的影响，所以一个调用方中途断开（比如一次很大的 blame 时客户端挂断）不会让等同一个值的其他调用方失败；`Compute` 里的 panic 会变成每个等待者收到的错误，而不是让这个 key 永远卡住。
 
 现有四种：
 
@@ -157,6 +159,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 非对象请求（`/api/*`、上传）原样转发给上游，所以对客户端来说三层没有区别
 - daemon 可以用 `--seed` 从快照启动（`kudzu snapshot` 生成，内容是某个版本全部对象的帧流），之后只拉增量。对应文章里"daemon 从定期刷新的快照启动"
 - `/stats` 返回命中率、合并数、上游请求数
+- 能连上某一层的人就能通过它使用全部 API，所以 unix socket 创建时的权限是 0600（只有创建者能连），要共用 daemon 就显式加 `--socket-mode 0660` 或 `0666`。默认的 socket `/tmp/kudzu.sock` 所在目录人人可写，谁先绑定这个路径，谁就能收到所有任务的请求。因此 `proto.Dial` 连上之后、发送任何内容之前会检查：socket 在所有人可写的目录里，而属主既不是当前用户也不是 root，就拒绝使用（`internal/proto/socket_unix.go`）。多用户共用的 daemon 应该放在不是所有人可写的目录里。daemon 的对象目录默认放在每个用户自己的目录（`<用户缓存目录>/kudzu/daemon`，权限 0700），不再是临时目录里的固定路径
 
 ## 8. 客户端（`internal/client`）
 
@@ -189,6 +192,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 自己对比两棵 git tree（哈希相同的子树跳过），得到相对第一父节点的改动
 - 新 blob 在 worker 池里并行做哈希、压缩、写入
 - `mapping` 表记录 git sha 到 changeset 的对应关系，重复执行只导入新提交，所以可以用来持续镜像一个 git 仓库
+- Kudzu 的 ref 只会快进到导入的最新提交（用 compare-and-swap）：ref 还不存在，或者它是新提交的祖先时才移动。`kudzu up` 每次启动都会重新导入，而上次导入之后在 Kudzu 里 land 的 changeset 不在 git 里，所以带着这些 changeset 的 ref 会保持原样，并打印警告。想保留它们，就用 `kudzu export` 导出到一个 git 分支，在 git 里合并后再导入（导出的提交会映射回同一批 changeset，所以合并结果能让 ref 快进）；`--force` 则强制移动 ref
 - shallow clone 的边界提交会被当作历史的起点
 
 **导出（`internal/gitexport`）**方向相反：agent 在 Kudzu 里工作的同时，团队现有的 git 工具（代码托管、clone 仓库的 CI、代码搜索）可以继续对着一个镜像运行。`kudzu export --store DIR --git mirror.git --ref main`：
@@ -204,8 +208,8 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 
 - **认证**：除 `/healthz` 外，每个请求都要带 `Authorization: Bearer <token>`。策略文件里只存 token 的 SHA-256（用 `kudzu token` 生成），每个哈希对应一个主体。没带 token 的请求使用可选的 `anonymous` 主体，否则返回 401。
 - **规则**：每个主体有 `read`、`write`、`deny` 路径前缀和可以移动的 `land` ref。最长的匹配前缀决定结果，长度相同时 deny 优先于 write，write 优先于 read。
-- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff、改动列表和 WAL 会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里。
-- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，检查的都正好是新 changeset 改动的路径。移动 ref（land 或 CAS）需要对应的 `land` 规则。
+- **读**：`cat`、`blame`、`ls`、`diff`、带路径的 `log` 都检查读权限，不允许时返回 403 并指明路径。目录列表、diff 和改动列表会去掉调用方不能读的条目；只改了这类路径的 changeset 不会出现在 `log` 里，在 WAL 里只以 `{seq, id, hidden: true}` 出现，读者的游标仍能前进。
+- **写**：写权限在 `repo.Create` 里检查（通过 `repo.WithChangeCheck`），所以无论是提交、rebase、merge 还是 land 时的 rebase，新 changeset 列出的每个路径都会被检查；检查发生在去掉无效改动之前，所以不能借写操作验证对不可读文件内容的猜测。移动 ref（land 或 CAS）需要对应的 `land` 规则，并且 `repo.MoveRef` 会检查 ref 新旧 tree 之间内容不同的每个路径：fast-forward 到别人的 changeset、第一父节点无关的 merge、回滚，改变 ref 内容的程度和新 changeset 一样。被拒绝的路径如果调用方连读都不能读，错误信息里不会出现；merge 和 rebase 的冲突也只给出数量，不列出这些路径。
 - **对象**：这是最难的部分。对象按内容寻址，任何一层都按 ID 提供，不带路径。Kudzu 的做法是：调用方只能取到它说得出 ID 的对象，所以绝不让它知道不能读的东西的 ID。凡是 API 返回 tree 的地方（resolve、show、ls、create、rebase、merge、snapshot），读权限受限的调用方拿到的都是**过滤后的 tree**：同一个目录去掉不能读的条目，写成普通的 tree 对象。客户端照常校验，所以 clone、update、commit、land 都不用改。完全可读的子树保留原 ID，过滤只发生在规则边界上的目录，结果按主体缓存。提交仍然基于真实的 changeset，所以从过滤后的 checkout 提交并 land，不会丢掉看不到的文件。
 - **缓存层**：缓存和 daemon 在 `/api/*` 和上传上转发客户端的 token，向上游取对象时用自己的 `KUDZU_TOKEN`。它们把缓存的对象提供给能连上的任何人，在这个模型下只会暴露调用方本来就说得出 ID 的东西。剩下的泄露是存在性判断：能准确猜出文件内容的人，可以确认仓库里有这个文件。
 
