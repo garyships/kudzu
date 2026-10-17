@@ -90,6 +90,13 @@ func (w *WC) Status(ctx context.Context) ([]FileStatus, error) {
 	ig := loadIgnore(w.Root)
 	seen := map[string]bool{}
 	var out []FileStatus
+	var tracked map[string]bool // directories with tracked files, built on first use
+	tracksUnder := func(dir string) bool {
+		if tracked == nil {
+			tracked = trackedDirs(w.Index)
+		}
+		return tracked[dir]
+	}
 	err := filepath.WalkDir(w.Root, func(full string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -103,7 +110,7 @@ func (w *WC) Status(ctx context.Context) ([]FileStatus, error) {
 		// is ignored.
 		reserved := object.ReservedName(d.Name())
 		if d.IsDir() {
-			if rel == metaDir || !sp.WantDir(rel) || ((reserved || ig.match(rel, true)) && !w.tracksUnder(rel)) {
+			if rel == metaDir || !sp.WantDir(rel) || ((reserved || ig.match(rel, true)) && !tracksUnder(rel)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -154,11 +161,18 @@ func (w *WC) Status(ctx context.Context) ([]FileStatus, error) {
 	return out, nil
 }
 
-func (w *WC) tracksUnder(dir string) bool {
-	for p := range w.Index {
-		if strings.HasPrefix(p, dir+"/") {
-			return true
+// trackedDirs returns every directory with a tracked file somewhere below
+// it, so status can tell in constant time whether an ignored directory must
+// still be walked. Scanning the index for each ignored directory instead
+// made status quadratic: thousands of __pycache__ directories times a
+// large index.
+func trackedDirs(index map[string]IndexEntry) map[string]bool {
+	dirs := map[string]bool{}
+	for p := range index {
+		// Once a directory is in the set, so are all its ancestors.
+		for d := path.Dir(p); d != "." && !dirs[d]; d = path.Dir(d) {
+			dirs[d] = true
 		}
 	}
-	return false
+	return dirs
 }

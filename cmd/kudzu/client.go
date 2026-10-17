@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,26 +20,47 @@ import (
 	"github.com/garyships/kudzu/internal/sparse"
 )
 
+// cwdWC is the working copy containing the current directory, opened on
+// first use and at most once per command: opening one loads its whole
+// index, and a query command may need it for both its remote and its
+// default revision.
+type cwdWC struct {
+	wc     *client.WC
+	opened bool
+}
+
+func (c *cwdWC) get() *client.WC {
+	if !c.opened {
+		c.opened = true
+		c.wc, _ = client.Open(".")
+	}
+	return c.wc
+}
+
 // dialRemote picks the remote from the flag, $KUDZU_REMOTE, or the working copy.
 func dialRemote(flagValue string) (*proto.Remote, error) {
+	return new(cwdWC).dialRemote(flagValue)
+}
+
+func (c *cwdWC) dialRemote(flagValue string) (*proto.Remote, error) {
 	if flagValue != "" {
 		return proto.Dial(flagValue)
 	}
 	if env := os.Getenv("KUDZU_REMOTE"); env != "" {
 		return proto.Dial(env)
 	}
-	if wc, err := client.Open("."); err == nil {
+	if wc := c.get(); wc != nil {
 		return wc.Remote, nil
 	}
 	return nil, errors.New("no remote: pass --remote, set KUDZU_REMOTE, or run inside a working copy")
 }
 
 // defaultRev is the working copy's changeset when inside one, else main.
-func defaultRev(rev string) string {
+func (c *cwdWC) defaultRev(rev string) string {
 	if rev != "" {
 		return rev
 	}
-	if wc, err := client.Open("."); err == nil && !wc.State.Changeset.IsZero() {
+	if wc := c.get(); wc != nil && !wc.State.Changeset.IsZero() {
 		return wc.State.Changeset.String()
 	}
 	return "main"
@@ -417,11 +439,12 @@ func cmdLog(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
-	q := url.Values{"rev": {defaultRev(*rev)}, "limit": {fmt.Sprint(*n)}}
+	q := url.Values{"rev": {cwd.defaultRev(*rev)}, "limit": {fmt.Sprint(*n)}}
 	if len(pos) > 0 {
 		q.Set("path", pos[0])
 	}
@@ -447,7 +470,8 @@ func cmdBlame(ctx context.Context, args []string) error {
 	if len(pos) != 1 {
 		return errors.New("usage: kudzu blame [-r REV] PATH")
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
@@ -458,7 +482,7 @@ func cmdBlame(ctx context.Context, args []string) error {
 		Time      int64     `json:"time"`
 		Text      string    `json:"text"`
 	}
-	if done, err := query(ctx, rem, "/api/blame", url.Values{"rev": {defaultRev(*rev)}, "path": {pos[0]}}, &lines); err != nil || done {
+	if done, err := query(ctx, rem, "/api/blame", url.Values{"rev": {cwd.defaultRev(*rev)}, "path": {pos[0]}}, &lines); err != nil || done {
 		return err
 	}
 	for _, l := range lines {
@@ -506,11 +530,12 @@ func cmdDiff(ctx context.Context, args []string) error {
 		}
 		*to = "main"
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
-	q := url.Values{"to": {defaultRev(*to)}}
+	q := url.Values{"to": {cwd.defaultRev(*to)}}
 	if *from != "" {
 		q.Set("from", *from)
 	}
@@ -558,12 +583,13 @@ func cmdShow(ctx context.Context, args []string) error {
 	if len(pos) > 0 {
 		rev = pos[0]
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
 	var c changesetView
-	if done, err := query(ctx, rem, "/api/changesets/"+url.PathEscape(defaultRev(rev)), nil, &c); err != nil || done {
+	if done, err := query(ctx, rem, "/api/changesets/"+url.PathEscape(cwd.defaultRev(rev)), nil, &c); err != nil || done {
 		return err
 	}
 	printChangeset(c, false)
@@ -589,11 +615,12 @@ func cmdCat(ctx context.Context, args []string) error {
 	if len(pos) != 1 {
 		return errors.New("usage: kudzu cat [-r REV] PATH")
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
-	b, err := rem.GetRaw(ctx, "/api/cat", url.Values{"rev": {defaultRev(*rev)}, "path": {pos[0]}})
+	b, err := rem.GetRaw(ctx, "/api/cat", url.Values{"rev": {cwd.defaultRev(*rev)}, "path": {pos[0]}})
 	if err != nil {
 		return err
 	}
@@ -614,12 +641,13 @@ func cmdLs(ctx context.Context, args []string) error {
 	if len(pos) > 0 {
 		p = pos[0]
 	}
-	rem, err := dialRemote(*remote)
+	var cwd cwdWC
+	rem, err := cwd.dialRemote(*remote)
 	if err != nil {
 		return err
 	}
 	var entries []object.Entry
-	if done, err := query(ctx, rem, "/api/ls", url.Values{"rev": {defaultRev(*rev)}, "path": {p}}, &entries); err != nil || done {
+	if done, err := query(ctx, rem, "/api/ls", url.Values{"rev": {cwd.defaultRev(*rev)}, "path": {p}}, &entries); err != nil || done {
 		return err
 	}
 	for _, e := range entries {
@@ -647,8 +675,13 @@ func cmdRefs(ctx context.Context, args []string) error {
 	if done, err := query(ctx, rem, "/api/refs", nil, &refs); err != nil || done {
 		return err
 	}
-	for name, id := range refs {
-		fmt.Printf("%s %s\n", id.Short(), name)
+	names := make([]string, 0, len(refs))
+	for name := range refs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("%s %s\n", refs[name].Short(), name)
 	}
 	return nil
 }
