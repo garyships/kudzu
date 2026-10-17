@@ -188,7 +188,7 @@ Errors are tool results with `isError: true`: invalid arguments, unknown revisio
 
 ## HTTP API
 
-Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored).
+Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/missing` and `/objects/upload` to their upstream, and serve `/objects/*` from their own cache, verifying every object they fetch upstream before caching it. Requests and responses are JSON unless noted. IDs are 64-character lowercase hex strings, and a zero ID is `""`. `rev` parameters accept any revision and default to `main`. Paths are repository-relative (leading and trailing `/` are ignored). Tiers close keep-alive connections idle for 2 minutes; the CLI and MCP server give up on connecting after 30 seconds and on response headers after 10 minutes.
 
 Errors: `{"error": "message"}` with status 400 (invalid request), 401 (missing or unknown token, when the server runs with `--auth`), 403 (`{"error": "permission denied: alice may not write docs/a.md", "path": "docs/a.md"}`; `path` is the denied path, or the ref for a land), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
 
@@ -242,9 +242,10 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 
 - Object ID: `sha256(kind + " " + decimal length + "\0" + content)`, where kind is `blob`, `tree`, `unode` or `changeset`.
 - Stored form, identical on every tier and on the wire: one kind byte (`b`, `t`, `u`, `c`), one codec byte (0 raw, 1 zlib), then the payload. Blobs of 256 bytes or more are zlib-compressed when that is smaller.
+- An object's content is at most 1 GiB (2^30 bytes), so a stored object is at most 2^30 + 2 bytes. Larger files cannot be committed; frames claiming more are rejected.
 - `GET /objects/{id}` → one stored object (`Cache-Control: immutable`).
 - `POST /objects/fetch`: the body is concatenated raw 32-byte IDs (at most 65536). The response is a stream of frames.
-- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive.
+- Frame: `id (32 bytes) | status (1 byte: 0 ok, 1 missing) | length (uint32 big-endian) | stored object`. A missing frame has length 0 and no payload. Streams can be resumed by asking again for whatever didn't arrive. A tier that fails partway sends the frames it has and then aborts the response, so a frame stream (here or from `/api/snapshot`) that ends cleanly is complete; one that breaks off is not.
 - Tree content: entries sorted by name, each `<octal mode> <name>\0<32-byte id>`.
 
 ### API-only write, step by step

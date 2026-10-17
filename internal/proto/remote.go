@@ -27,6 +27,8 @@ type Remote struct {
 	Token string
 	base  string
 	hc    *http.Client
+
+	fetchSlots chan struct{} // see SetFetchLimit
 }
 
 func Dial(addr string) (*Remote, error) {
@@ -38,6 +40,12 @@ func Dial(addr string) (*Remote, error) {
 		MaxIdleConnsPerHost: 64,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true, // objects are already compressed
+
+		// A stuck tier must not hang its clients forever. Headers get
+		// minutes: lands and rebases run on the server before it answers.
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Minute,
 	}
 	r := &Remote{Addr: addr, Token: os.Getenv("KUDZU_TOKEN"), hc: &http.Client{Transport: tr}}
 	if sock, ok := strings.CutPrefix(addr, "unix://"); ok {
@@ -160,6 +168,9 @@ func (r *Remote) GetRaw(ctx context.Context, path string, q url.Values) ([]byte,
 }
 
 // Stream returns a response body for streaming endpoints (e.g. snapshots).
+// A server that fails partway breaks the stream rather than ending it, so
+// reading the body then returns an error such as io.ErrUnexpectedEOF; only
+// io.EOF means the response is complete.
 func (r *Remote) Stream(ctx context.Context, path string, q url.Values) (io.ReadCloser, error) {
 	resp, err := r.do(ctx, "GET", path, q, nil, "")
 	if err != nil {
@@ -174,19 +185,38 @@ const (
 	fetchAttempts    = 3
 )
 
+// SetFetchLimit caps the fetch requests in flight at once on this Remote,
+// across all callers of Fetch together (each of which still runs a few
+// chunks in parallel within the cap). A tier uses it to bound its load on
+// the tier above. Call it before the Remote is in use.
+func (r *Remote) SetFetchLimit(n int) {
+	r.fetchSlots = make(chan struct{}, n)
+}
+
 // Fetch requests objects in chunks, a few chunks at a time. fn is called once
 // per received object (never concurrently). Interrupted chunks are retried for
-// just the objects that did not arrive. It returns IDs no tier has.
+// just the objects that did not arrive. It returns IDs no tier has. The first
+// error, such as one returned by fn, stops the whole fetch and is returned.
 func (r *Remote) Fetch(ctx context.Context, ids []object.ID, fn func(id object.ID, stored []byte) error) ([]object.ID, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var mu sync.Mutex
 	var missing []object.ID
 	var firstErr error
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
 	sem := make(chan struct{}, fetchParallelism)
 	var wg sync.WaitGroup
 	for start := 0; start < len(ids); start += fetchChunk {
 		chunk := ids[start:min(start+fetchChunk, len(ids))]
-		wg.Add(1)
 		sem <- struct{}{}
+		if failed() {
+			break
+		}
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -200,6 +230,7 @@ func (r *Remote) Fetch(ctx context.Context, ids []object.ID, fn func(id object.I
 			missing = append(missing, miss...)
 			if err != nil && firstErr == nil {
 				firstErr = err
+				cancel() // stop the other chunks too
 			}
 		}()
 	}
@@ -228,29 +259,59 @@ func (r *Remote) fetchChunk(ctx context.Context, ids []object.ID, fn func(object
 				want = append(want, id)
 			}
 		}
+		var fnErr error
 		lastErr = r.fetchOnce(ctx, want, func(id object.ID, b []byte, miss bool) error {
 			if !pending[id] {
 				return nil
 			}
-			delete(pending, id)
 			if miss {
+				delete(pending, id)
 				missing = append(missing, id)
 				return nil
 			}
-			return fn(id, b)
+			// An object is done once fn has taken it. fn's error (a hash
+			// mismatch, a full disk) is the caller's, not the stream's:
+			// retrying would not help, and dropping it would turn into a
+			// misleading "not found" later.
+			if fnErr = fn(id, b); fnErr != nil {
+				return fnErr
+			}
+			delete(pending, id)
+			return nil
 		})
+		if fnErr != nil {
+			return nil, fnErr
+		}
 		var he *HTTPError
 		if errors.As(lastErr, &he) && he.Status < 500 {
 			return nil, lastErr
 		}
 	}
 	if len(pending) > 0 {
-		return missing, fmt.Errorf("fetch: %d objects not received: %w", len(pending), lastErr)
+		if lastErr == nil {
+			lastErr = errors.New("the response ended without them")
+		}
+		var first object.ID
+		for _, id := range ids {
+			if pending[id] {
+				first = id
+				break
+			}
+		}
+		return missing, fmt.Errorf("fetch: %d objects not received (e.g. %s): %w", len(pending), first.Short(), lastErr)
 	}
 	return missing, nil
 }
 
 func (r *Remote) fetchOnce(ctx context.Context, ids []object.ID, fn func(object.ID, []byte, bool) error) error {
+	if r.fetchSlots != nil {
+		select {
+		case r.fetchSlots <- struct{}{}:
+			defer func() { <-r.fetchSlots }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	resp, err := r.do(ctx, "POST", "/objects/fetch", nil, bytes.NewReader(EncodeIDs(ids)), "application/octet-stream")
 	if err != nil {
 		return err
