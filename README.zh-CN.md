@@ -97,7 +97,7 @@ Cursor、Claude Desktop 等客户端的配置见 [docs/AI.md](docs/AI.md)。
 <summary>把 server、区域缓存、节点 daemon 分开启动</summary>
 
 ```bash
-kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行
+kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历史，可以重复执行；main 只会快进，在 Kudzu 里 land 的改动不会被回退
 kudzu export --store ./data --git /path/to/mirror.git --ref main   # 把 Kudzu 里 land 的内容同步回 git 镜像，也是增量的
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
@@ -109,6 +109,8 @@ kudzu clone --sparse services/api $KUDZU_REMOTE wc && cd wc
 kudzu commit -m "api: tweak" --land main  # 在服务端创建 changeset 并合进主干
 kudzu write -r main -m "bump" --land main VERSION=@./VERSION   # 完全不用工作区
 ```
+
+unix socket 默认只允许创建者自己连接（权限 0600），因为能连上的人就能 land 改动、移动 ref。想让多个用户共用一个 daemon，把 socket 放在不是所有人都可写的目录里，并加上 `--socket-mode 0660`（或 `0666`）。如果 socket 在 `/tmp` 这类所有人都可写的目录里、又属于别的用户，客户端会拒绝连接，因为任何用户都可能抢先创建它。
 
 </details>
 

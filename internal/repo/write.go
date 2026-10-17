@@ -13,13 +13,22 @@ import (
 	"github.com/garyships/kudzu/internal/textdiff"
 )
 
-// ConflictError lists paths that could not be merged automatically.
+// ConflictError lists paths that could not be merged automatically. Hidden
+// counts conflicting paths left out because the caller may not read them.
 type ConflictError struct {
-	Paths []string
+	Paths  []string
+	Hidden int
 }
 
 func (e *ConflictError) Error() string {
-	return "conflict in " + strings.Join(e.Paths, ", ")
+	msg := "conflict in " + strings.Join(e.Paths, ", ")
+	switch {
+	case e.Hidden > 0 && len(e.Paths) == 0:
+		msg = fmt.Sprintf("conflict in %d paths you may not read", e.Hidden)
+	case e.Hidden > 0:
+		msg += fmt.Sprintf(" and %d paths you may not read", e.Hidden)
+	}
+	return msg
 }
 
 type CreateRequest struct {
@@ -34,12 +43,77 @@ type CreateRequest struct {
 
 type changeCheckKey struct{}
 
-// WithChangeCheck returns a context under which every changeset created, by
-// Create directly or by a rebase, merge or land, first passes each path it
-// changes to check. The server uses it to enforce write permissions on
-// exactly the paths a new changeset touches.
+// WithChangeCheck returns a context under which writes first pass every
+// path whose content they would change to check: each path a new changeset
+// lists (by Create directly or by a rebase, merge or land), and each path
+// whose content differs between a ref's old and new tree when MoveRef (or a
+// land) moves it. The server uses it to enforce write permissions.
 func WithChangeCheck(ctx context.Context, check func(path string) error) context.Context {
 	return context.WithValue(ctx, changeCheckKey{}, check)
+}
+
+func changeCheck(ctx context.Context) (func(string) error, bool) {
+	check, ok := ctx.Value(changeCheckKey{}).(func(string) error)
+	return check, ok
+}
+
+// MoveRef moves ref from old to new by compare-and-swap (see
+// store.Meta.CASRef). A new ref's name must be valid. Under WithChangeCheck,
+// every path whose content differs between old's tree and new's tree must
+// pass the check, whatever changesets lie in between: a fast-forward to
+// someone else's changeset, or back to an old one, changes the ref's content
+// as much as a new changeset does. A missing ref counts as an empty tree.
+func (r *Repo) MoveRef(ctx context.Context, ref string, old, new object.ID) error {
+	if old.IsZero() && !new.IsZero() {
+		if err := ValidateRefName(ref); err != nil {
+			return err
+		}
+	}
+	if check, ok := changeCheck(ctx); ok && old != new {
+		var a, b object.ID
+		var err error
+		if !old.IsZero() {
+			if a, err = r.TreeOf(ctx, old); err != nil {
+				return err
+			}
+		}
+		if !new.IsZero() {
+			if b, err = r.TreeOf(ctx, new); err != nil {
+				return err
+			}
+		}
+		if err := r.DiffTrees(ctx, a, b, "", func(d FileDiff) error { return check(d.Path) }); err != nil {
+			return err
+		}
+	}
+	return r.Meta.CASRef(ctx, ref, old, new)
+}
+
+// ValidateRefName applies git's rules for ref names (git check-ref-format),
+// which also keeps them apart from revision syntax such as ~ and ^.
+func ValidateRefName(name string) error {
+	bad := func(why string) error { return fmt.Errorf("%w: invalid ref name %q: %s", ErrInvalid, name, why) }
+	switch {
+	case name == "" || name == "@":
+		return bad("empty")
+	case strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.Contains(name, "//"):
+		return bad("empty path component")
+	case strings.HasSuffix(name, "."):
+		return bad("ends with a dot")
+	case strings.Contains(name, ".."), strings.Contains(name, "@{"):
+		return bad(`contains ".." or "@{"`)
+	}
+	for _, c := range name {
+		if c < 0x20 || c == 0x7f || strings.ContainsRune(" ~^:?*[\\", c) {
+			return bad(fmt.Sprintf("contains %q", c))
+		}
+	}
+	for _, comp := range strings.Split(name, "/") {
+		if strings.HasPrefix(comp, ".") || strings.HasSuffix(comp, ".lock") {
+			return bad(`a component starts with "." or ends with ".lock"`)
+		}
+	}
+	return nil
 }
 
 type Created struct {
@@ -63,6 +137,16 @@ func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) 
 			return nil, err
 		}
 	}
+	// Check every requested path, including ones that turn out to be no-ops:
+	// otherwise allowed-or-denied would reveal whether a guessed blob is what
+	// an unreadable path already holds.
+	if check, ok := changeCheck(ctx); ok {
+		for _, ch := range req.Changes {
+			if err := check(ch.Path); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var base object.ID
 	if len(req.Parents) > 0 {
 		var err error
@@ -73,13 +157,6 @@ func (r *Repo) Create(ctx context.Context, req CreateRequest) (*Created, error) 
 	changes, err := r.normalizeChanges(ctx, base, req.Changes)
 	if err != nil {
 		return nil, err
-	}
-	if check, ok := ctx.Value(changeCheckKey{}).(func(string) error); ok {
-		for _, ch := range changes {
-			if err := check(ch.Path); err != nil {
-				return nil, err
-			}
-		}
 	}
 	tree, err := r.applyToTree(ctx, base, changes)
 	if err != nil {
@@ -421,7 +498,7 @@ func (r *Repo) Land(ctx context.Context, head object.ID, ref string) (*LandResul
 				res.Rebased = true
 			}
 		}
-		err = r.Meta.CASRef(ctx, ref, tip, next)
+		err = r.MoveRef(ctx, ref, tip, next)
 		if err == nil {
 			res.Landed = next
 			return res, nil

@@ -13,7 +13,7 @@ No full clones. History as an API. Lock-free landing for thousands of concurrent
 [![ci](https://github.com/garyships/kudzu/actions/workflows/ci.yml/badge.svg)](https://github.com/garyships/kudzu/actions/workflows/ci.yml)
 [![MCP: 16 tools](https://img.shields.io/badge/MCP-16_tools-8b5cf6)](docs/AI.md)
 [![license: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
-![go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8)
+![go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8)
 
 [**Website**](https://garyships.github.io/kudzu/) · [**Demo video**](https://garyships.github.io/kudzu/#demo) · [Design](docs/DESIGN.md) · [For AI agents](docs/AI.md) · [中文](README.zh-CN.md)
 
@@ -156,7 +156,8 @@ Changesets record only what changed. Root trees, per-path history, a commit-grap
 <summary>Server, regional cache and node daemon as separate processes</summary>
 
 ```bash
-# import an existing git repo (re-run any time; only new commits are ingested)
+# import an existing git repo (re-run any time: only new commits are ingested,
+# and main only fast-forwards, so work landed in Kudzu is never rewound)
 kudzu import --store ./data --git /path/to/repo --as main
 # ...and keep a git mirror of what lands in Kudzu (also incremental)
 kudzu export --store ./data --git /path/to/mirror.git --ref main
@@ -176,6 +177,8 @@ kudzu commit -m "api: say hi" --land main
 # or skip the checkout entirely
 kudzu write -r main -m "bump version" --land main VERSION=@./VERSION
 ```
+
+A unix socket only lets its owner connect (mode 0600), because whoever can connect can land changes and move refs. To share a daemon between users, put its socket in a directory that is not world-writable and pass `--socket-mode 0660` (or `0666`). Clients refuse a socket in a world-writable directory such as `/tmp` that another user owns, since any user could have created it first.
 
 `scripts/demo.sh /path/to/git/repo` runs the whole flow end to end and prints each tier's cache statistics.
 

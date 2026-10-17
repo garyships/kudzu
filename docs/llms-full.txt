@@ -15,7 +15,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 - **Tiers**: `kudzu server` (authoritative), `kudzu cache` (regional, in memory) and `kudzu daemon` (per machine, on disk, usually on a unix socket). All three answer the same object requests and forward `/api/*` to the server, so a client can point at any of them.
 - **Working copy**: a directory with a `.kudzu/` folder. It holds the files of one revision (optionally sparse), a bounded object cache and an index. It never holds history.
 - **Sparse (cone mode)**: a sparse directory includes everything below it, plus the files directly inside each of its ancestor directories (for example the root `README.md`). An empty spec means the full tree.
-- **Remote address**: `host:port`, `http(s)://host:port` or `unix:///path/to.sock`. Resolution: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote.
+- **Remote address**: `host:port`, `http(s)://host:port` or `unix:///path/to.sock`. Resolution: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote. Clients refuse a unix socket in a world-writable directory (like `/tmp`) that is owned by neither the current user nor root, since any local user could have created it: remove a stale one, or use a socket of your own (`kudzu up --socket PATH`).
 - **Author**: `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - **Token**: when the server runs with `--auth`, every client (CLI, MCP server, working copy, tier) sends `$KUDZU_TOKEN` as a bearer token. Tokens are never written to disk.
 - **Working copy ownership**: commands use the working copy found by walking up from the current directory only if its `.kudzu` directory belongs to you (as git does for `.git`), so one planted in a shared directory cannot redirect them or your token. `KUDZU_SAFE_DIRECTORY=PATH` (or `*`) trusts a working copy anyway; root may use the working copy of the user it runs for under sudo.
@@ -25,7 +25,7 @@ Source: https://github.com/garyships/kudzu · Website: https://garyships.github.
 Quickest: one process runs all three tiers on top of a git repository.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh   # or: go install github.com/garyships/kudzu/cmd/kudzu@latest (Go 1.24+)
+curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh   # or: go install github.com/garyships/kudzu/cmd/kudzu@latest (Go 1.26+)
 cd /path/to/any/git/repo && kudzu up      # imports history, serves until Ctrl-C
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock   # in another shell
 ```
@@ -33,10 +33,10 @@ export KUDZU_REMOTE=unix:///tmp/kudzu.sock   # in another shell
 Each tier as its own process (how a real deployment runs):
 
 ```bash
-kudzu import --store ./data --git /path/to/repo --as main     # git history -> changesets; re-run to add new commits
+kudzu import --store ./data --git /path/to/repo --as main     # git history -> changesets; re-run to add new commits (main only fast-forwards)
 kudzu server --store ./data --listen 127.0.0.1:7070 &
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
-kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock --dir /tmp/kudzu-objects &
+kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &   # socket mode 0600: only you can connect
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock
 ```
 
@@ -50,13 +50,13 @@ A single `kudzu server` is enough for experiments: point `KUDZU_REMOTE` at it di
 
 | Command | Flags (default) | Purpose |
 |---|---|---|
-| `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `-v` | Playground: import a git repository (incrementally) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
+| `kudzu up` | `--git .`, `--ref HEAD`, `--as main`, `--dir` (per-repository folder in the user cache dir), `--port 7070` (cache on port+1; 0 picks free ports), `--socket /tmp/kudzu.sock`, `--socket-mode 0600`, `--force`, `-v` | Playground: import a git repository (incrementally, moving `--as` like `kudzu import`) and run server, regional cache and node daemon in one process until Ctrl-C. Refuses to start if the socket is in use. |
 | `kudzu version` | | Print the version (`kudzu --version` works too). |
-| `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly), `--auth FILE` (access policy), `--meta postgres://…` and `--objects s3://bucket/prefix?endpoint=…` (shared backends instead of `--store`; `gs://` for GCS; credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) | Authoritative server: SQLite metadata plus an object directory, or Postgres plus an S3-compatible bucket so several servers can serve one repository. With `--auth`, requests need a bearer token and per-directory rules apply (see Access control). |
+| `kudzu server` | `--store kudzu-data`, `--listen 127.0.0.1:7070` (host:port or unix:///path), `--socket-mode 0600`, `--mem 512MB`, `--lazy gen,unode` (derived types to compute on demand instead of eagerly), `--auth FILE` (access policy), `--meta postgres://…` and `--objects s3://bucket/prefix?endpoint=…` (shared backends instead of `--store`; `gs://` for GCS; credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) | Authoritative server: SQLite metadata plus an object directory, or Postgres plus an S3-compatible bucket so several servers can serve one repository. With `--auth`, requests need a bearer token and per-directory rules apply (see Access control). |
 | `kudzu token` | `--json` | Generate a random access token and the `token_sha256` to put in an `--auth` policy. |
-| `kudzu cache` | `--listen 127.0.0.1:7071`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
-| `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--upstream 127.0.0.1:7071`, `--dir $TMPDIR/kudzu-daemon`, `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. |
-| `kudzu import` | `--store kudzu-data` (or `--meta`/`--objects`), `--git .`, `--ref HEAD`, `--as main` | Import git history into a server store. Incremental: commits already imported are skipped. |
+| `kudzu cache` | `--listen 127.0.0.1:7071`, `--socket-mode 0600`, `--upstream 127.0.0.1:7070`, `--mem 1GB`, `--upstream-concurrency 32` | Regional in-memory object cache. |
+| `kudzu daemon` | `--listen unix:///tmp/kudzu.sock`, `--socket-mode 0600`, `--upstream 127.0.0.1:7071`, `--dir` (`kudzu/daemon` in the user cache dir, created 0700), `--max-disk 10GB`, `--upstream-concurrency 8`, `--seed FILE` | Per-machine on-disk object cache, shared by every job on the machine. Its unix socket lets only its owner connect unless `--socket-mode` (octal, e.g. `0660`, `0666`) says otherwise; anyone who can connect can land and move refs through it. Put a socket shared between users in a directory that is not world-writable. |
+| `kudzu import` | `--store kudzu-data` (or `--meta`/`--objects`), `--git .`, `--ref HEAD`, `--as main`, `--force` | Import git history into a server store. Incremental: commits already imported are skipped. `--as` only fast-forwards: if it has changesets the git revision lacks (landed in Kudzu since the last import), it is left alone with a warning; `kudzu export` them to a git branch and merge it there, or pass `--force` to move it anyway. |
 | `kudzu export` | `--store kudzu-data`, `--git PATH` (required), `--ref main`, `--as` (git branch, default same as `--ref`), `--force`, `--json` | Write the ref's history to a git repository (bare, or with the branch not checked out) and move the branch, fast-forward only unless `--force`. Incremental; imported commits map back to the originals, so exporting to the repository you imported from adds only what landed in Kudzu. |
 | `kudzu snapshot` | `--remote`, `-r main`, `--sparse a,b`, `-o kudzu-seed.frames` | Save every object of a revision, for `kudzu daemon --seed`. |
 | `kudzu stats` | `--remote` | Print a tier's statistics as JSON. |
@@ -208,7 +208,7 @@ File modes are decimal in JSON: 33188 (0100644 file), 33261 (0100755 executable)
 }
 ```
 
-The longest matching prefix decides (`""` is the whole repository; at equal length deny > write > read; write implies read). Reads (`cat`, `blame`, `ls`, `diff`, `log` with a path) need read access to the path; listings, diffs, change lists and the WAL leave out what the caller may not read, and a changeset that only touched such paths is hidden. Every changeset the server creates for the caller (create, rebase, merge, land) needs write access to each path it changes. Landing on or compare-and-swapping a ref needs a matching `land` entry. Uploading needs write access somewhere. Without `anonymous`, requests with no token get 401.
+The longest matching prefix decides (`""` is the whole repository; at equal length deny > write > read; write implies read). Reads (`cat`, `blame`, `ls`, `diff`, `log` with a path) need read access to the path; listings, diffs, change lists and the WAL leave out what the caller may not read, and a changeset that only touched such paths is hidden. Every changeset the server creates for the caller (create, rebase, merge, land) needs write access to each path it lists. Landing on or compare-and-swapping a ref needs a matching `land` entry and write access to every path whose content differs between the ref's old and new tree (a missing ref counts as empty). A refused path the caller may not read is not named, and conflicts on such paths are only counted. Hidden changesets appear in `/api/wal` as `{"seq", "id", "hidden": true}`. Ref names follow `git check-ref-format`. Uploading needs write access somewhere. Without `anonymous`, requests with no token get 401.
 
 Objects are fetched by ID, so a caller with restricted read access only ever receives filtered trees: `/api/resolve`, `/api/changesets`, `/api/ls`, create, rebase, merge and snapshots return trees with unreadable entries removed (real tree objects, verified like any other). Clones and updates work unchanged; subtrees the caller may read in full keep their real IDs. Caches and daemons forward each client's token on `/api/*` and use their own `KUDZU_TOKEN` (normally a principal that reads everything) for upstream object fetches.
 

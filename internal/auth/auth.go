@@ -56,11 +56,15 @@ func (l Level) String() string {
 // reports it as 403, naming the path or ref.
 type DeniedError struct {
 	Principal string
-	Action    string // read, write or land
+	Action    string // read, write, land or upload
 	Path      string // a path, or a ref for land
+	Hidden    bool   // the path is one the principal may not read, so it is not named
 }
 
 func (e *DeniedError) Error() string {
+	if e.Hidden {
+		return fmt.Sprintf("permission denied: this would change paths %s may not read", e.Principal)
+	}
 	what := e.Path
 	if what == "" {
 		what = "the repository root"
@@ -301,6 +305,22 @@ func (pr *Principal) ReadsAll(dir string) bool {
 	return true
 }
 
+// WritesAll reports whether the principal may change everything below dir.
+func (pr *Principal) WritesAll(dir string) bool {
+	if pr == nil {
+		return true
+	}
+	if !pr.CanWrite(dir) {
+		return false
+	}
+	for _, r := range pr.rules {
+		if r.level < Write && r.prefix != dir && under(r.prefix, dir) {
+			return false
+		}
+	}
+	return true
+}
+
 // WritesAnywhere reports whether the principal may change any path at all
 // (and so upload objects).
 func (pr *Principal) WritesAnywhere() bool {
@@ -333,7 +353,7 @@ func (pr *Principal) CheckRead(path string) error {
 	if pr.CanRead(path) {
 		return nil
 	}
-	return &DeniedError{pr.Name, "read", path}
+	return &DeniedError{Principal: pr.Name, Action: "read", Path: path}
 }
 
 // CheckSee is CheckRead for directories that are listed or searched.
@@ -341,21 +361,21 @@ func (pr *Principal) CheckSee(dir string) error {
 	if pr.CanSee(dir) {
 		return nil
 	}
-	return &DeniedError{pr.Name, "read", dir}
+	return &DeniedError{Principal: pr.Name, Action: "read", Path: dir}
 }
 
 func (pr *Principal) CheckWrite(path string) error {
 	if pr.CanWrite(path) {
 		return nil
 	}
-	return &DeniedError{pr.Name, "write", path}
+	return &DeniedError{Principal: pr.Name, Action: "write", Path: path}
 }
 
 func (pr *Principal) CheckLand(ref string) error {
 	if pr.CanLand(ref) {
 		return nil
 	}
-	return &DeniedError{pr.Name, "land", ref}
+	return &DeniedError{Principal: pr.Name, Action: "land", Path: ref}
 }
 
 type ctxKey struct{}

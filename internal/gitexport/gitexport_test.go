@@ -176,7 +176,7 @@ func TestExportRoundTrip(t *testing.T) {
 	src := sourceRepo(t)
 	r := newRepo(t)
 	ctx := context.Background()
-	if _, err := gitimport.Run(ctx, r, src, "main", "main", nil); err != nil {
+	if _, err := gitimport.Run(ctx, r, src, "main", "main", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	importedTip := strings.TrimSpace(git(t, src, "rev-parse", "main"))
@@ -226,7 +226,7 @@ func TestExportRoundTrip(t *testing.T) {
 	if err != nil || again.Exported != 0 || again.Tip != res.Tip {
 		t.Fatalf("second export = %+v, %v", again, err)
 	}
-	back, err := gitimport.Run(ctx, r, mirror, "main", "main", nil)
+	back, err := gitimport.Run(ctx, r, mirror, "main", "main", false, nil)
 	if err != nil || back.Imported != 0 || back.Tip != merged.ID {
 		t.Fatalf("re-import of the mirror = %+v, %v", back, err)
 	}
@@ -251,13 +251,72 @@ func TestExportRoundTrip(t *testing.T) {
 	checkMirror(t, r, mirror)
 }
 
+// TestReimportAfterExport follows the advice kudzu import prints when main
+// has changesets git lacks: export them to a branch, merge it in git and
+// import again, which then fast-forwards main without --force.
+func TestReimportAfterExport(t *testing.T) {
+	src := sourceRepo(t)
+	r := newRepo(t)
+	ctx := context.Background()
+	reimport := func() *gitimport.Result {
+		t.Helper()
+		res, err := gitimport.Run(ctx, r, src, "main", "main", false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	reimport()
+
+	// Kudzu is ahead: the export and merge are a fast-forward in git.
+	landed := land(t, r, "Alice <alice@example.com>", "kudzu work", map[string]string{"k.txt": "k\n"}, object.ModeFile)
+	if res := reimport(); !res.Kept || res.Diverged || res.Ref != landed {
+		t.Fatalf("re-import with kudzu ahead = %+v", res)
+	}
+	if _, err := Run(ctx, r, Options{GitDir: src, Ref: "main", Branch: "kudzu-main"}); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "merge", "-q", "--ff-only", "kudzu-main")
+	if res := reimport(); res.Kept || res.Imported != 0 || res.Ref != landed || res.Tip != landed {
+		t.Fatalf("re-import after the fast-forward = %+v", res)
+	}
+
+	// Both sides moved on: merging in git joins them.
+	landed = land(t, r, "Bob <bob@example.com>", "more kudzu work", map[string]string{"k.txt": "kk\n"}, object.ModeFile)
+	writeFile(t, src, "g.txt", "g\n", 0o644)
+	git(t, src, "add", "-A")
+	git(t, src, "commit", "-q", "-m", "git work")
+	if res := reimport(); !res.Kept || !res.Diverged || res.Ref != landed || res.Imported != 1 {
+		t.Fatalf("re-import with diverged histories = %+v", res)
+	}
+	if _, err := Run(ctx, r, Options{GitDir: src, Ref: "main", Branch: "kudzu-main"}); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "merge", "-q", "--no-edit", "kudzu-main")
+	res := reimport()
+	if !res.RefMoved || res.Kept || res.Imported != 1 {
+		t.Fatalf("re-import of the merge = %+v", res)
+	}
+	if ok, err := r.IsAncestor(ctx, landed, res.Ref); err != nil || !ok {
+		t.Fatalf("merge %s does not contain the landed %s: %v", res.Ref.Short(), landed.Short(), err)
+	}
+
+	// New git commits on top of exported ones fast-forward main.
+	writeFile(t, src, "h.txt", "h\n", 0o644)
+	git(t, src, "add", "-A")
+	git(t, src, "commit", "-q", "-m", "more git work")
+	if res := reimport(); !res.RefMoved || res.Kept || res.Imported != 1 {
+		t.Fatalf("fast-forward re-import = %+v", res)
+	}
+}
+
 // TestExportToEmptyRepo writes the whole history, imported commits included,
 // into a repository that has none of it.
 func TestExportToEmptyRepo(t *testing.T) {
 	src := sourceRepo(t)
 	r := newRepo(t)
 	ctx := context.Background()
-	if _, err := gitimport.Run(ctx, r, src, "main", "main", nil); err != nil {
+	if _, err := gitimport.Run(ctx, r, src, "main", "main", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	land(t, r, "Alice <alice@example.com>", "kudzu work", map[string]string{"k.txt": "k\n"}, object.ModeFile)
