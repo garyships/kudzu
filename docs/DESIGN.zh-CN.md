@@ -68,7 +68,7 @@ CAS 竞争失败后重试的 land、遇到冲突的 rebase、从没 land 的提�
 
 日志的位置永远不变：被删的条目在 `seq` 里留下空洞，`/api/wal` 的读者自然跳过，`since` 游标依然有效。用墓碑只会让日志无谓地增长。
 
-gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；重新追加的 changeset 会刷新 `created`；清除前会再检查一次每个候选对象的时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
+gc 可以在服务端运行时执行，靠的是宽限期：服务端告诉客户端"这个对象我已经有了"（`/objects/missing`）或新 changeset 复用已有对象时，会 touch 这个对象（刷新 mtime）；changeset 被重新追加、被新 changeset 当作父节点、或者有 ref 移到它上面时，都会刷新 `created`。gc 扫完对象后，会再从 ref 和期间新追加的 changeset 标记一遍；删除 changeset 时先子后父，且只删仍然过期的，被 touch 过的会保留，连同它的祖先和它们需要的对象。对象删除前先移到一边、再检查一次时间。创建 changeset 时，父节点是查日志而不是查缓存，所以不会有东西建在已被回收的 changeset 上。前提是宽限期远大于服务端的 touch 间隔（10 分钟）；`--keep 0s` 只适合没人使用的存储。`--dry-run` 只报告会删除什么。
 
 ## 3. 派生数据引擎（`internal/repo/derive.go`）
 

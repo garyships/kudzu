@@ -199,7 +199,26 @@ func (p *Postgres) ListRefs(ctx context.Context) (map[string]object.ID, error) {
 	return out, rows.Err()
 }
 
+func (p *Postgres) TouchChangeset(ctx context.Context, id object.ID) error {
+	now := time.Now().Unix()
+	tag, err := p.pool.Exec(ctx, `UPDATE changesets SET created = $1 WHERE id = $2 AND created < $3`, now, id[:], now-touchSeconds)
+	if err != nil || tag.RowsAffected() == 1 {
+		return err
+	}
+	var one int
+	err = p.pool.QueryRow(ctx, `SELECT 1 FROM changesets WHERE id = $1`, id[:]).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (p *Postgres) CASRef(ctx context.Context, name string, old, new object.ID) error {
+	if !new.IsZero() {
+		if err := p.TouchChangeset(ctx, new); err != nil {
+			return err
+		}
+	}
 	var n int64
 	switch {
 	case old.IsZero() && new.IsZero():
