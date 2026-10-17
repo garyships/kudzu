@@ -75,7 +75,7 @@ This list is generated from the server's `tools/list`. `?` marks an optional arg
 | `kudzu_land` | write | `head`, `ref`? | Land an existing changeset onto a ref (default `main`): server-side rebase plus compare-and-swap, no lock. Landing again is a no-op (`already_landed`). |
 | `kudzu_rebase` | write | `head`, `onto`? | Rebase a changeset onto another revision on the server. Creates new changesets and moves no ref. |
 | `kudzu_wc_commit` | write | `message`, `dir`?, `add_untracked`?, `land`?, `author`? | Commit a working copy's local changes, optionally landing them in the same call. |
-| `kudzu_wc_update` | write, destructive | `dir`?, `rev`? | Move a working copy to another revision (default `main`). Refuses if tracked files are modified. Untracked files at paths the new revision adds are overwritten. |
+| `kudzu_wc_update` | write, destructive | `dir`?, `rev`? | Move a working copy to another revision (default `main`). Refuses if tracked files are modified, or if untracked files are where the new revision has files. |
 
 Read tools are annotated `readOnlyHint: true`. Write tools carry `destructiveHint: false`, except `kudzu_wc_update`, which is `true`. All tools set `openWorldHint: false`. `--read-only` keeps the eleven read tools.
 

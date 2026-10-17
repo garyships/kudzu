@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -111,16 +114,17 @@ func (w *WC) collectFiles(ctx context.Context, root object.ID, sp sparse.Spec) (
 			if err != nil {
 				return nil, err
 			}
+			if err := checkDir(runtime.GOOS, d.path, t.Entries, sp); err != nil {
+				return nil, err
+			}
 			for _, e := range t.Entries {
 				p := object.JoinPath(d.path, e.Name)
-				if p == metaDir {
-					return nil, fmt.Errorf("remote tree contains reserved path %s", metaDir)
+				if !materialized(e, p, sp) {
+					continue
 				}
 				if e.IsDir() {
-					if sp.WantDir(p) {
-						next = append(next, dirRef{p, e.ID})
-					}
-				} else if e.Mode != object.ModeGitlink && sp.WantFile(p) {
+					next = append(next, dirRef{p, e.ID})
+				} else {
 					files[p] = e
 				}
 			}
@@ -162,6 +166,9 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 			if err != nil {
 				return nil, nil, err
 			}
+			if err := checkDir(runtime.GOOS, pair.path, nt.Entries, sp); err != nil {
+				return nil, nil, err
+			}
 			oe, ne := ot.Entries, nt.Entries
 			for i, j := 0, 0; i < len(oe) || j < len(ne); {
 				var o, n *object.Entry
@@ -184,9 +191,6 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 					name = n.Name
 				}
 				p := object.JoinPath(pair.path, name)
-				if p == metaDir {
-					return nil, nil, fmt.Errorf("remote tree contains reserved path %s", metaDir)
-				}
 				if o != nil && n != nil && *o == *n {
 					continue
 				}
@@ -225,32 +229,50 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 // apply removes deletes, then materializes writes. Blobs are written to the
 // working copy straight from the fetch stream on a worker pool; they are only
 // kept in the local object cache when no node daemon is caching them already.
-func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes []string) error {
-	sort.Sort(sort.Reverse(sort.StringSlice(deletes)))
-	for _, p := range deletes {
-		if err := os.RemoveAll(w.abs(p)); err != nil {
+//
+// Without force, apply refuses before changing anything if an untracked file
+// is in the way, and it never removes what the index does not track. Nothing
+// is written through a symlink: directories are created one component at a
+// time, each write first checks the directories above it, and symlinks are
+// created last, one at a time, so no link this checkout makes exists yet
+// while files are written.
+func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes []string, force bool) error {
+	if !force {
+		if err := w.checkUntracked(writes, deletes); err != nil {
 			return err
 		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(deletes)))
+	for _, p := range deletes {
+		// Below something that is no longer a real directory, p is not in
+		// the working copy, and removing it could follow a symlink out.
+		if w.checkParents(p) == nil {
+			if err := remove(w.abs(p), force); err != nil {
+				return err
+			}
+			w.pruneEmptyDirs(filepath.Dir(w.abs(p)))
+		}
 		delete(w.Index, p)
-		w.pruneEmptyDirs(filepath.Dir(w.abs(p)))
 	}
 
 	type target struct {
 		path    string
 		mode    uint32
-		existed bool
+		tracked bool
 	}
 	byBlob := map[object.ID][]target{}
 	dirs := map[string]bool{}
 	for p, e := range writes {
-		prev, existed := w.Index[p]
-		if existed && prev.Blob == e.ID && prev.Mode == e.Mode {
+		prev, tracked := w.Index[p]
+		if tracked && prev.Blob == e.ID && prev.Mode == e.Mode {
 			if info, err := os.Lstat(w.abs(p)); err == nil && info.Size() == prev.Size && info.ModTime().UnixNano() == prev.MtimeNs {
 				continue
 			}
 		}
-		byBlob[e.ID] = append(byBlob[e.ID], target{p, e.Mode, existed})
-		dirs[filepath.Dir(w.abs(p))] = true
+		byBlob[e.ID] = append(byBlob[e.ID], target{p, e.Mode, tracked})
+		if d := path.Dir(p); d != "." {
+			dirs[d] = true
+		}
 	}
 	if len(byBlob) == 0 {
 		return nil
@@ -261,10 +283,17 @@ func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes 
 	}
 	sort.Strings(dirList)
 	for _, d := range dirList {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := w.mkdirs(d, force); err != nil {
 			return err
 		}
 	}
+
+	type link struct {
+		target
+		id      object.ID
+		content []byte
+	}
+	var links []link
 
 	type item struct {
 		id     object.ID
@@ -302,7 +331,13 @@ func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes 
 					}
 				}
 				for _, t := range byBlob[it.id] {
-					ie, err := w.writeFile(t.path, t.mode, it.id, content, t.existed)
+					if t.mode == object.ModeSymlink {
+						mu.Lock()
+						links = append(links, link{t, it.id, content})
+						mu.Unlock()
+						continue
+					}
+					ie, err := w.writeFile(t.path, t.mode, it.id, content, t.tracked, force)
 					if err != nil {
 						fail(fmt.Errorf("%s: %w", t.path, err))
 						continue
@@ -337,6 +372,17 @@ func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes 
 	}
 	close(items)
 	wg.Wait()
+	if fetchErr == nil && firstErr == nil {
+		sort.Slice(links, func(i, j int) bool { return links[i].path < links[j].path })
+		for _, l := range links {
+			ie, err := w.writeFile(l.path, l.mode, l.id, l.content, l.tracked, force)
+			if err != nil {
+				firstErr = fmt.Errorf("%s: %w", l.path, err)
+				break
+			}
+			written[l.path] = ie
+		}
+	}
 	for p, ie := range written {
 		w.Index[p] = ie
 	}
@@ -346,32 +392,217 @@ func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes 
 	return firstErr
 }
 
-// writeFile writes one working-copy file. Files that existed are removed
-// first, so a symlink or a stale mode never leaks into the new file.
-func (w *WC) writeFile(p string, mode uint32, id object.ID, content []byte, existed bool) (IndexEntry, error) {
+// UntrackedError lists untracked files that a checkout would have
+// overwritten or removed.
+type UntrackedError struct {
+	Paths []string
+}
+
+func (e *UntrackedError) Error() string {
+	ps, more := e.Paths, ""
+	if len(ps) > 10 {
+		ps, more = ps[:10], fmt.Sprintf(" and %d more", len(ps)-10)
+	}
+	return "untracked files would be overwritten: " + strings.Join(ps, ", ") + more + " (move or remove them first)"
+}
+
+// checkUntracked finds what writing writes would overwrite that the index
+// does not track and that deletes does not remove: a file at a path to
+// write, files inside a directory that becomes a file, and a file or
+// symlink where a directory is needed. Ignored files count too.
+func (w *WC) checkUntracked(writes map[string]object.Entry, deletes []string) error {
+	deleted := make(map[string]bool, len(deletes))
+	for _, p := range deletes {
+		deleted[p] = true
+	}
+	var byFold map[string][]fs.FileInfo
+	expendable := func(p string, info fs.FileInfo) bool {
+		if deleted[p] {
+			return true
+		}
+		// On a case-insensitive filesystem a deleted file can turn up under
+		// another spelling, as when README becomes readme.
+		if byFold == nil {
+			byFold = map[string][]fs.FileInfo{}
+			for _, d := range deletes {
+				if di, err := os.Lstat(w.abs(d)); err == nil {
+					byFold[foldCase(d)] = append(byFold[foldCase(d)], di)
+				}
+			}
+		}
+		for _, di := range byFold[foldCase(p)] {
+			if os.SameFile(info, di) {
+				return true
+			}
+		}
+		return false
+	}
+	var inWay []string
+	isDir := map[string]bool{} // directories looked at, and whether one is there
+	for p := range writes {
+		if _, ok := w.Index[p]; ok {
+			continue
+		}
+		absent := false // a directory above p is missing: nothing is at p
+		for i := 0; i < len(p) && !absent; i++ {
+			if p[i] != '/' {
+				continue
+			}
+			d := p[:i]
+			ok, seen := isDir[d]
+			if !seen {
+				info, err := os.Lstat(w.abs(d))
+				switch {
+				case err == nil && info.IsDir():
+					ok = true
+				case err == nil && !expendable(d, info):
+					inWay = append(inWay, d)
+				case err != nil && !errors.Is(err, fs.ErrNotExist):
+					return err
+				}
+				isDir[d] = ok
+			}
+			absent = !ok
+		}
+		if absent {
+			continue
+		}
+		info, err := os.Lstat(w.abs(p))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			if !expendable(p, info) {
+				inWay = append(inWay, p)
+			}
+			continue
+		}
+		err = filepath.WalkDir(w.abs(p), func(full string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(w.Root, full)
+			if rel = filepath.ToSlash(rel); !expendable(rel, info) {
+				inWay = append(inWay, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if len(inWay) > 0 {
+		sort.Strings(inWay)
+		return &UntrackedError{Paths: inWay}
+	}
+	return nil
+}
+
+// checkParents makes sure every directory above p is a real directory, so a
+// write or removal at p cannot follow a symlink out of the working copy (git
+// refuses such a path as "beyond a symbolic link").
+func (w *WC) checkParents(p string) error {
+	for i := 0; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		info, err := os.Lstat(w.abs(p[:i]))
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symbolic link, not a directory", p[:i])
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", p[:i])
+		}
+	}
+	return nil
+}
+
+// mkdirs creates directory dir and its parents one component at a time. A
+// file or symlink in the way is never followed: it is an error, or removed
+// with force.
+func (w *WC) mkdirs(dir string, force bool) error {
+	for i := 1; i <= len(dir); i++ {
+		if i < len(dir) && dir[i] != '/' {
+			continue
+		}
+		full := w.abs(dir[:i])
+		info, err := os.Lstat(full)
+		switch {
+		case err == nil && info.IsDir():
+			continue
+		case err == nil && !force:
+			return fmt.Errorf("cannot create directory %s: %s is in the way", dir, dir[:i])
+		case err == nil:
+			if err := os.Remove(full); err != nil {
+				return err
+			}
+		case !errors.Is(err, fs.ErrNotExist):
+			return err
+		}
+		if err := os.Mkdir(full, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// remove deletes the file at a tracked path. Only force also removes a
+// directory that has taken its place, and whatever is in it.
+func remove(full string, force bool) error {
+	var err error
+	if force {
+		err = os.RemoveAll(full)
+	} else {
+		err = os.Remove(full)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// writeFile writes one working-copy file after checking the directories
+// above it. Whatever is at p is removed first, so a symlink or a stale mode
+// never leaks into the new file; without force that must be a file the index
+// tracks, or a directory with no files in it.
+func (w *WC) writeFile(p string, mode uint32, id object.ID, content []byte, tracked, force bool) (IndexEntry, error) {
+	if err := w.checkParents(p); err != nil {
+		return IndexEntry{}, err
+	}
 	full := w.abs(p)
-	if existed {
-		os.Remove(full)
+	if info, err := os.Lstat(full); err == nil {
+		switch {
+		case force:
+			err = os.RemoveAll(full)
+		case info.IsDir():
+			err = removeEmptyDirs(full)
+		case tracked:
+			err = os.Remove(full)
+		default:
+			err = errors.New("an untracked file is in the way")
+		}
+		if err != nil {
+			return IndexEntry{}, err
+		}
 	}
 	var err error
 	if mode == object.ModeSymlink {
-		if err = os.Symlink(string(content), full); err != nil && !existed {
-			os.RemoveAll(full)
-			err = os.Symlink(string(content), full)
-		}
+		err = os.Symlink(string(content), full)
 	} else {
 		perm := os.FileMode(0o644)
 		if mode == object.ModeExec {
 			perm = 0o755
 		}
-		if err = os.WriteFile(full, content, perm); err != nil {
-			// Something else (e.g. a leftover directory) is in the way.
-			os.RemoveAll(full)
-			err = os.WriteFile(full, content, perm)
-		}
-		if err == nil && mode == object.ModeExec {
-			err = os.Chmod(full, perm) // the umask may have dropped exec bits
-		}
+		err = createFile(full, content, perm)
 	}
 	if err != nil {
 		return IndexEntry{}, err
@@ -381,6 +612,36 @@ func (w *WC) writeFile(p string, mode uint32, id object.ID, content []byte, exis
 		return IndexEntry{}, err
 	}
 	return IndexEntry{Mode: mode, Blob: id, Size: info.Size(), MtimeNs: info.ModTime().UnixNano()}, nil
+}
+
+// createFile writes a new file. O_EXCL refuses to follow a symlink at full.
+func createFile(full string, content []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(content)
+	if err == nil && perm&0o111 != 0 {
+		err = f.Chmod(perm) // the umask may have dropped exec bits
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// removeEmptyDirs removes dir if nothing but empty directories is inside.
+func removeEmptyDirs(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			removeEmptyDirs(filepath.Join(dir, e.Name())) // what is left makes the Remove below fail
+		}
+	}
+	return os.Remove(dir)
 }
 
 func (w *WC) pruneEmptyDirs(dir string) {

@@ -17,6 +17,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Remote:** `--remote ADDR` > `$KUDZU_REMOTE` > the working copy's recorded remote. ADDR is `host:port`, `http(s)://host:port` or `unix:///path.sock` (a node daemon).
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access.
+- **Paths:** no path may contain a `.git` or `.kudzu` directory, in any case and at any depth; the server answers 400. A git checkout nested in a working copy is ignored by `status` and `commit -A`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 
 No server to talk to? `kudzu up` inside any git repository imports its history and serves everything on `unix:///tmp/kudzu.sock` until Ctrl-C. Restarting it keeps what you landed on `main`: it warns instead of moving `main` back to the git tip. If a command refuses that socket because another user owns it, start your own with `kudzu up --socket PATH` and set `KUDZU_REMOTE=unix://PATH`.
@@ -36,7 +37,7 @@ No server to talk to? `kudzu up` inside any git repository imports its history a
 | Local changes | `kudzu status` (M modified, D deleted, ? untracked) · `kudzu diff` (no `--from`/`--to`) |
 | Commit (and land) | `kudzu commit -m MSG [-A] [--land main]` (`-A` adds untracked files) |
 | Land / rebase what you committed | `kudzu land [--ref main]` · `kudzu rebase [-d main]` |
-| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified) |
+| Move the checkout | `kudzu update [-r REV]` (refuses if tracked files are modified or untracked files are in the way; `--force` discards both) |
 | Widen or narrow the checkout | `kudzu sparse [show \| set DIRS \| add DIRS \| remove DIRS]` |
 | Commit without any checkout | `kudzu write -r PARENT -m MSG [--land main] [--delete PATH]... PATH=@FILE \| PATH=@-` |
 

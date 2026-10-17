@@ -164,7 +164,7 @@ func Clone(ctx context.Context, remote, dir, rev string, sp sparse.Spec, out io.
 	if err != nil {
 		return nil, err
 	}
-	if err := w.apply(ctx, files, nil); err != nil {
+	if err := w.apply(ctx, files, nil, false); err != nil {
 		return nil, err
 	}
 	w.State.Changeset, w.State.Tree = res.Changeset, res.Tree

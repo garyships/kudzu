@@ -132,6 +132,35 @@ func TestFileDirTransitions(t *testing.T) {
 	}
 }
 
+// TestReservedPaths: no changeset may add .git or .kudzu at any depth, but
+// one that a repository got before they were reserved can be deleted.
+func TestReservedPaths(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	c1 := commit(t, r, nil, "base", files{"README": "hi"})
+	config, err := r.WriteBlob(ctx, []byte("[core]\n\tfsmonitor = \"touch pwned; false\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := []object.Change{{Path: "sub/.git/config", Mode: object.ModeFile, Blob: config}}
+	if _, err := r.Create(ctx, CreateRequest{Parents: []object.ID{c1}, Changes: add}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), ".git is reserved") {
+		t.Fatalf("adding sub/.git/config: %v", err)
+	}
+	// An old changeset, appended to the log as it was then.
+	raw := (&object.Changeset{Parents: []object.ID{c1}, Author: "a", Time: 1, Message: "old", Changes: add}).Encode()
+	old := object.Hash(object.KindChangeset, raw)
+	if _, err := r.Meta.AppendChangeset(ctx, old, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot(t, r, old); len(got) != 2 {
+		t.Fatalf("old changeset has %v", got)
+	}
+	c3 := commit(t, r, []object.ID{old}, "remove sub/.git", nil, "sub/.git/config")
+	if got := snapshot(t, r, c3); !equalFiles(got, files{"README": "hi"}) {
+		t.Fatalf("after the delete: %v", got)
+	}
+}
+
 // randomDAG builds a history with merges and returns changesets in creation order.
 func randomDAG(t *testing.T, r *Repo, n int, seed int64) []object.ID {
 	rnd := rand.New(rand.NewSource(seed))
