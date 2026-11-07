@@ -170,7 +170,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰。缓存总大小在第一次写入需要它时才统计，而不是打开时就统计，所以只读的命令（`log`、`status`）不管缓存涨到多大都一样快；每个命令最多打开一次工作副本
 - **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小。动手之前，如果新版本要放文件或建目录的位置上有未跟踪的文件（不管是否被忽略），就拒绝执行；`--force` 会连同本地修改一起丢弃它们。删除时只删索引跟踪的文件，即使加了 `--force`，也不管旧 tree 里列了什么：被忽略的文件、嵌套的 `.git`，以及上游删掉的 submodule 所在的目录都会保留。`kudzu sparse` 同样会拒绝，而且从不强制
 - **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希。被忽略的目录直接跳过，除非里面有被跟踪的文件；判断时查的是每次运行只建一次的"含跟踪文件的目录"集合。嵌套 git 仓库的 `.git` 会被忽略，因为 changeset 里不能有它
-- **所有权**：命令从当前目录往上找 `.kudzu` 目录，只有它属于当前用户时才使用（和 git 的 "dubious ownership" 规则一样），所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。`KUDZU_SAFE_DIRECTORY` 可以绕过这个检查
+- **所有权**：命令从当前目录往上找最近的 `.kudzu`，只有它是真正的目录（不是符号链接）、属于当前用户（和 git 的 "dubious ownership" 规则一样）、同组和其他用户都不能写时才使用，所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。记录 remote 的状态文件通过检查过的那个目录读取（`os.OpenRoot`），检查之后再换成链接也没法改道。`KUDZU_SAFE_DIRECTORY` 可以绕过属主和权限检查
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步。索引记下的是每个文件被读取之前的 size 和 mtime，所以提交过程中发生的修改仍会显示为已修改
 
 ### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）
