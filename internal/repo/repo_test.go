@@ -80,6 +80,7 @@ func equalFiles(a, b files) bool {
 }
 
 func TestTreeDerivationMatchesModel(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	rnd := rand.New(rand.NewSource(1))
 	model := files{}
@@ -202,6 +203,7 @@ func ancestors(t *testing.T, r *Repo, id object.ID) map[object.ID]bool {
 }
 
 func TestAncestryAgainstBruteForce(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	ctx := context.Background()
 	ids := randomDAG(t, r, 120, 3)
@@ -236,6 +238,7 @@ func TestAncestryAgainstBruteForce(t *testing.T) {
 }
 
 func TestNthAncestorAndResolve(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	ctx := context.Background()
 	var chain []object.ID
@@ -291,6 +294,7 @@ func TestNthAncestorAndResolve(t *testing.T) {
 // TestResolveParents checks ^N and chained suffixes on a history with merges
 // against a walk of the changesets' parent lists.
 func TestResolveParents(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	ctx := context.Background()
 	ids := randomDAG(t, r, 80, 5)
@@ -409,6 +413,7 @@ func TestRebaseAndMerge(t *testing.T) {
 // TestConcurrentLand lands many changesets at once with no global lock. Every
 // one must end up on main exactly once, and main must stay linear.
 func TestConcurrentLand(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	ctx := context.Background()
 	root := commit(t, r, nil, "root", files{"README": "hi\n"})
@@ -464,6 +469,7 @@ func TestConcurrentLand(t *testing.T) {
 }
 
 func TestLazyDerivation(t *testing.T) {
+	t.Parallel()
 	r := newTestRepo(t)
 	r.Eager = nil // nothing but trees computed up front
 	ctx := context.Background()
