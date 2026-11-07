@@ -260,3 +260,5 @@ The post describes permissions on individual directories, so sensitive code can 
 | GET / POST | `/objects/{id}`, `/objects/fetch` | object protocol, served by every tier |
 | POST | `/objects/missing`, `/objects/upload` | which objects the server lacks; upload |
 | GET | `/stats`, `/healthz` | statistics, health |
+
+Request bodies are bounded per endpoint (413 beyond): 256 MiB for a create and `/objects/missing`, 8 MiB for a merge, 64 KiB for a land, a rebase or a ref move. Permissions that do not depend on the body are checked before it is read, so a caller who may not make a request cannot make the server decode a large one. A changeset from the API names at most 1000 parents and 1,000,000 changes, with a message of at most 1 MiB, an author of at most 4 KiB and 64 KiB of extra keys and values.

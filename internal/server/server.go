@@ -191,6 +191,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 	case errors.Is(err, store.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	case errors.Is(err, errTooLarge):
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": err.Error()})
 	default:
 		s.Log.Printf("internal error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -204,8 +206,25 @@ func (s *Server) resolve(ctx context.Context, rev string) (object.ID, error) {
 	return s.Repo.Resolve(ctx, rev)
 }
 
-func decodeBody(r *http.Request, v any) error {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 256<<20)).Decode(v); err != nil {
+// Request body limits. Handlers check what they can of the caller's
+// permissions before reading the body, so that a caller who may not make a
+// request cannot make the server read and decode a large one.
+const (
+	maxLargeBody = 256 << 20 // a create's change list, or the IDs to upload
+	maxMergeBody = 8 << 20   // a merge's message and author, even if every byte is escaped
+	maxSmallBody = 64 << 10  // land, rebase, ref moves
+)
+
+// errTooLarge is a request body over its endpoint's limit (413).
+var errTooLarge = errors.New("request body too large")
+
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(v)
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		return fmt.Errorf("%w (at most %d bytes)", errTooLarge, limit)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: bad request body: %v", repo.ErrInvalid, err)
 	}
 	return nil
@@ -271,7 +290,7 @@ func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []object.ID `json:"ids"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxLargeBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -447,7 +466,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateRequest
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxLargeBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -803,15 +822,15 @@ func (s *Server) handleRefs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
+	if err := auth.FromContext(r.Context()).CheckLand(r.PathValue("name")); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Old object.ID `json:"old"`
 		New string    `json:"new"`
 	}
-	if err := decodeBody(r, &req); err != nil {
-		s.fail(w, err)
-		return
-	}
-	if err := auth.FromContext(r.Context()).CheckLand(r.PathValue("name")); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -840,7 +859,7 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 		Head string `json:"head"`
 		Onto string `json:"onto"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -879,7 +898,7 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		Author  string `json:"author"`
 		Message string `json:"message"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxMergeBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -915,7 +934,7 @@ func (s *Server) handleLand(w http.ResponseWriter, r *http.Request) {
 		Head string `json:"head"`
 		Ref  string `json:"ref"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}

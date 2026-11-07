@@ -25,6 +25,7 @@ import (
 // changeset with files in services/api, secrets and docs.
 type rig struct {
 	r     *repo.Repo
+	srv   *Server
 	alice *proto.Remote
 	admin *proto.Remote
 	main  object.ID
@@ -47,7 +48,7 @@ func newRig(t *testing.T, aliceRules string) *rig {
 	srv.Auth = policy
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	g := &rig{r: r}
+	g := &rig{r: r, srv: srv}
 	g.main = g.commit(t, object.Zero, "initial", map[string]string{
 		"README.md":            "# monorepo\n",
 		"services/api/main.go": "package main\n",
@@ -274,6 +275,49 @@ func TestCreateLimits(t *testing.T) {
 	err := g.admin.PostJSON(ctx, "/api/merge", map[string]any{"ours": "main", "theirs": other.String(), "message": strings.Repeat("m", maxMessage+1)}, nil)
 	if status(err) != http.StatusBadRequest {
 		t.Errorf("a merge with too long a message: %v", err)
+	}
+}
+
+// watchedBody is a request body that records whether anything read it.
+type watchedBody struct{ read bool }
+
+func (b *watchedBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, io.EOF
+}
+
+// post sends a request straight to the server's handler as alice.
+func (g *rig) post(path string, body io.Reader) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, body)
+	req.Header.Set("Authorization", "Bearer "+g.alice.Token)
+	rec := httptest.NewRecorder()
+	g.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestRequestBodies: a caller that may not make a request is refused before
+// its body is read, and no endpoint reads more of a body than its requests
+// need, so large bodies cannot tie up the server's memory.
+func TestRequestBodies(t *testing.T) {
+	g := newRig(t, `"read": ["docs"], "land": ["users/alice/*"]`)
+	for _, path := range []string{"/api/changesets", "/api/rebase", "/api/merge", "/api/refs/main"} {
+		body := &watchedBody{}
+		if rec := g.post(path, body); rec.Code != http.StatusForbidden || body.read {
+			t.Errorf("%s: status %d, body read: %v", path, rec.Code, body.read)
+		}
+	}
+
+	g = newRig(t, `"read": [""], "write": ["services/api"], "land": ["main", "users/alice/*"]`)
+	rev := strings.Repeat("a", maxSmallBody)
+	for path, body := range map[string]string{
+		"/api/land":                 `{"head": "` + rev + `", "ref": "main"}`,
+		"/api/rebase":               `{"head": "` + rev + `", "onto": "main"}`,
+		"/api/refs/users/alice/new": `{"new": "` + rev + `"}`,
+		"/api/merge":                `{"ours": "main", "theirs": "main", "message": "` + strings.Repeat("m", maxMergeBody) + `"}`,
+	} {
+		if rec := g.post(path, strings.NewReader(body)); rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s with a %d KiB body: status %d: %s", path, len(body)>>10, rec.Code, rec.Body)
+		}
 	}
 }
 

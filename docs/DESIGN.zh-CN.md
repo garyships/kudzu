@@ -247,3 +247,5 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 | GET / POST | `/objects/{id}`、`/objects/fetch` | 对象协议，三层都支持 |
 | POST | `/objects/missing`、`/objects/upload` | 上传前询问缺哪些对象 / 上传 |
 | GET | `/stats`、`/healthz` | 统计 / 健康检查 |
+
+请求体按接口限制大小（超出返回 413）：create 和 `/objects/missing` 256 MiB，merge 8 MiB，land、rebase 和移动 ref 64 KiB。不依赖请求体的权限在读请求体之前检查，无权发起请求的调用方没法让服务端解码大请求体。通过 API 创建的 changeset 最多 1000 个父节点、1,000,000 个改动，提交说明最多 1 MiB，作者最多 4 KiB，extra 的键和值合计最多 64 KiB。
