@@ -46,7 +46,7 @@ func (k *kudzu) addReadTools(s *sdk.Server) {
 	}, k.blameTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_diff",
-		Description: "Compare two revisions on the server. Returns the changed files (status A added, M modified, D deleted) and, unless patch is false, a unified diff after the JSON summary. With only 'to', shows what that changeset changed relative to its first parent. With merge_base, diffs from the common ancestor of from and to (what a branch adds). The patch is truncated to max_patch_bytes.",
+		Description: "Compare two revisions on the server. Returns the changed files (status A added, M modified, D deleted) and, unless patch is false, a unified diff after the JSON summary. With only 'to', shows what that changeset changed relative to its first parent. With merge_base, diffs from the common ancestor of from and to (what a branch adds). Files over 8 MiB or 200,000 lines are named in the patch without hunks. The patch is truncated to max_patch_bytes.",
 		Annotations: readOnly("Diff"),
 	}, k.diffTool)
 	addTool(s, &sdk.Tool{

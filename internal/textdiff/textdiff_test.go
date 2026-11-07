@@ -130,3 +130,61 @@ func TestUnified(t *testing.T) {
 		t.Fatal("equal inputs should produce no diff")
 	}
 }
+
+// lowerLimits sets MaxBytes and MaxLines for one test.
+func lowerLimits(t *testing.T, bytes, lines int) {
+	oldBytes, oldLines := MaxBytes, MaxLines
+	MaxBytes, MaxLines = bytes, lines
+	t.Cleanup(func() { MaxBytes, MaxLines = oldBytes, oldLines })
+}
+
+// TestTooLarge: content over either limit is not diffed or merged by lines.
+func TestTooLarge(t *testing.T) {
+	lowerLimits(t, 100, 10)
+	small := strings.Repeat("x\n", 10)
+	longLines := strings.Repeat("y", 101)
+	manyLines := strings.Repeat("\n", 10) + "z"
+	for _, c := range []struct {
+		s    string
+		want bool
+	}{{small, false}, {longLines, true}, {manyLines, true}} {
+		if got := TooLarge([]byte(c.s)); got != c.want {
+			t.Errorf("TooLarge(%q) = %v", c.s, got)
+		}
+	}
+	for _, big := range []string{longLines, manyLines} {
+		if got := Unified("a/f", "b/f", []byte(small), []byte(big), 3); got != "Files a/f and b/f differ (too large to diff by lines)\n" {
+			t.Errorf("Unified of large content = %q", got)
+		}
+	}
+	// Edits far apart merge, but not when a version is too large.
+	base := strings.Repeat("l\n", 10)
+	ours := "O\n" + base[2:]
+	theirs := base[:18] + "T\n"
+	if _, ok := Merge3([]byte(base), []byte(ours), []byte(theirs)); !ok {
+		t.Fatal("small disjoint edits should merge")
+	}
+	if _, ok := Merge3([]byte(base), []byte(ours), []byte(theirs+"more\n")); ok {
+		t.Fatal("a version over MaxLines was merged by lines")
+	}
+	// A change on one side only needs no line-based work.
+	if got, ok := Merge3([]byte(manyLines), []byte(manyLines), []byte(small)); !ok || string(got) != small {
+		t.Fatalf("one-sided change of large content: ok=%v", ok)
+	}
+}
+
+// TestSplitLinesSharesContent: the lines are slices of one copy of the
+// content, not one allocation each.
+func TestSplitLinesSharesContent(t *testing.T) {
+	b := []byte(strings.Repeat("line\n", 1000) + "last")
+	lines := SplitLines(b)
+	if len(lines) != 1001 || strings.Join(lines, "") != string(b) {
+		t.Fatalf("got %d lines", len(lines))
+	}
+	if n := testing.AllocsPerRun(10, func() { SplitLines(b) }); n > 2 {
+		t.Fatalf("SplitLines made %v allocations for 1001 lines", n)
+	}
+	if SplitLines(nil) != nil {
+		t.Fatal("no content should give no lines")
+	}
+}

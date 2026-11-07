@@ -105,10 +105,12 @@ The post's three benefits hold:
 
 **Blame** uses the file unode's previous version as its parent. Unchanged lines keep their attribution; new or changed lines go to the current linknode. Diffs use Myers' algorithm (`internal/textdiff`).
 
+Line-based work costs many times a file's size in memory when its lines are short, and Myers' time grows with the number of lines. So content over 8 MiB or 200,000 lines (`textdiff.MaxBytes`, `textdiff.MaxLines`) is never diffed or merged by lines, like a binary file: a patch shows `Files a/P and b/P differ (too large to diff by lines)` instead of hunks, and a three-way merge of it is a conflict.
+
 ## 4. Server-side writes (`internal/repo/write.go`)
 
 - **Create** validates paths and blobs, drops no-op changes, and applies the changes to the parent's tree. Only directories on the path to a changed file are rewritten, so the cost is about (changed files × depth). It then appends to the log and computes the eager derived types.
-- **threeWay** compares base and ours for each changed path. Paths untouched upstream apply as-is. Text files changed on both sides get a line-level three-way merge. Anything else is a conflict and returns the conflicting paths.
+- **threeWay** compares base and ours for each changed path. Paths untouched upstream apply as-is. Text files changed on both sides get a line-level three-way merge, if no version is too large for it. Anything else is a conflict and returns the conflicting paths.
 - **Rebase** moves the changesets in `merge-base(head, onto)..head` onto `onto`, one by one, on the server.
 - **Merge** creates a two-parent changeset whose changes are listed relative to ours.
 - **Land** is an optimistic loop with no global lock:

@@ -106,10 +106,12 @@ type Deriver struct {
 
 **blame**：用文件 unode 的上一个版本当父节点。没变的行沿用上一版的归属，新增或修改的行归到当前 linknode。差异计算用 Myers diff（`internal/textdiff`）。
 
+按行处理的开销是逐行算的：行很短时，内存占用是文件大小的许多倍，Myers 的耗时也随行数增长。所以超过 8 MiB 或 200,000 行的内容（`textdiff.MaxBytes`、`textdiff.MaxLines`）和二进制文件一样，从不按行做 diff 或合并：patch 里只显示 `Files a/P and b/P differ (too large to diff by lines)`，不给出 hunk；对它做三方合并算冲突。
+
 ## 4. 服务端写操作（`internal/repo/write.go`）
 
 - **Create**：校验路径和 blob，去掉无效改动，把改动应用到父节点的 tree 上（只重写改动路径上的目录，成本是"改动文件数 × 目录深度"），追加到日志，再计算需要立即计算的派生数据
-- **三方合并 `threeWay`**：对每个改动的路径，比较 base 和 ours。上游没动过的直接应用；两边都改了的文本文件做行级三方合并；其余情况算冲突，返回冲突路径
+- **三方合并 `threeWay`**：对每个改动的路径，比较 base 和 ours。上游没动过的直接应用；两边都改了的文本文件做行级三方合并（前提是没有哪个版本超出按行处理的上限）；其余情况算冲突，返回冲突路径
 - **Rebase**：在服务端把 `merge-base(head, onto)..head` 这一串 changeset 逐个移到 `onto` 上
 - **Merge**：生成一个双父节点的 changeset，改动相对 ours 列出
 - **Land**：没有全局锁的乐观循环：
