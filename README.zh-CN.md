@@ -101,6 +101,8 @@ kudzu import --store ./data --git /path/to/repo --as main     # 导入 git 历�
 kudzu export --store ./data --git /path/to/mirror.git --ref main   # 把 Kudzu 里 land 的内容同步回 git 镜像，也是增量的
 
 kudzu server --store ./data --listen 127.0.0.1:7070 &
+# 也可以跑多台无状态服务端，共用 Postgres 和兼容 S3 的存储桶：
+#   kudzu server --meta postgres://... --objects s3://bucket/kudzu --listen ...
 kudzu cache  --upstream 127.0.0.1:7070 --listen 127.0.0.1:7071 &
 kudzu daemon --upstream 127.0.0.1:7071 --listen unix:///tmp/kudzu.sock &
 export KUDZU_REMOTE=unix:///tmp/kudzu.sock
@@ -122,6 +124,7 @@ unix socket 默认只允许创建者自己连接（权限 0600），因为能连
 - 全量 clone（daemon 已经缓存过）0.46 秒
 - 另一台机器的全量 clone（区域缓存已经缓存过）0.49 秒
 - 对照：同一个仓库 `git clone` 要 2.07 秒
+- 50 个同时到达的冷请求，上游只收到 1 个
 
 代价是存储更大：服务端占 79 MB，git 的 packfile 只有 26 MB。
 

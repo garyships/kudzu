@@ -46,7 +46,7 @@ func init() {
 		{"token", "generate an access token for a server's --auth policy", cmdToken},
 
 		{"clone", "create a (sparse) working copy", cmdClone},
-		{"mount", "mount a revision read-only, fetching files on first read (FUSE)", cmdMount},
+		{"mount", "mount a revision, fetching files on first read (FUSE; --writable to edit)", cmdMount},
 		{"status", "show local changes", cmdStatus},
 		{"commit", "create a changeset on the server from local changes", cmdCommit},
 		{"update", "move the working copy to another revision", cmdUpdate},
