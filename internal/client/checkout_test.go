@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -341,6 +342,56 @@ func TestUpdateKeepsUntrackedFiles(t *testing.T) {
 	}
 	if st, err := wc.Status(ctx); err != nil || len(st) != 1 || st[0].Path != ".kudzuignore" {
 		t.Fatalf("status after a forced update: %+v %v", st, err)
+	}
+}
+
+// Submodules are not checked out, so one removed upstream is not in the
+// index. Update removed the directory the user's own checkout of it sits in:
+// a plain update failed half-way on it, and --force deleted it.
+func TestUpdateLeavesSubmoduleCheckout(t *testing.T) {
+	ctx := context.Background()
+	r, remote := newServer(t, nil)
+	var changes []object.Change
+	for p, c := range map[string]string{"README": "hi\n", "vendor/lib": strings.Repeat("ab", 20), "zz": "zz\n"} {
+		id, err := r.WriteBlob(ctx, []byte(c))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mode := object.ModeFile
+		if p == "vendor/lib" {
+			mode = object.ModeGitlink
+		}
+		changes = append(changes, object.Change{Path: p, Mode: mode, Blob: id})
+	}
+	c1, err := r.Create(ctx, repo.CreateRequest{Author: "a", Message: "m", Changes: changes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Meta.CASRef(ctx, "main", object.Zero, c1.ID); err != nil {
+		t.Fatal(err)
+	}
+	wc := clone(t, remote, nil)
+	writeTo(t, wc.Root, "vendor/lib/.git/HEAD", "ref: refs/heads/main\n")
+	writeTo(t, wc.Root, "vendor/lib/lib.go", "package lib\n")
+	c2 := commit(t, r, c1.ID, map[string]string{"vendor/lib": "", "zz": ""})
+	for _, force := range []bool{false, true} {
+		var out strings.Builder
+		wc.Out = &out
+		if err := wc.Update(ctx, c2.String(), force); err != nil {
+			t.Fatalf("update (force=%v): %v", force, err)
+		}
+		if !strings.Contains(out.String(), "removing 1\n") {
+			t.Errorf("update (force=%v) printed %q", force, out.String())
+		}
+		if readFrom(t, wc.Root, "vendor/lib/.git/HEAD") != "ref: refs/heads/main\n" || readFrom(t, wc.Root, "vendor/lib/lib.go") != "package lib\n" {
+			t.Fatalf("update (force=%v) changed the submodule's checkout", force)
+		}
+		if _, err := os.Lstat(filepath.Join(wc.Root, "zz")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("update (force=%v) left zz: %v", force, err)
+		}
+		if err := wc.Update(ctx, c1.ID.String(), false); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

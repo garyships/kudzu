@@ -206,10 +206,10 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 						next = append(next, treePair{p, oldDir, newDir})
 					}
 				}
-				if o != nil && !o.IsDir() && sp.WantFile(p) {
+				if o != nil && !o.IsDir() && materialized(*o, p, sp) {
 					deletes = append(deletes, p)
 				}
-				if n != nil && !n.IsDir() && n.Mode != object.ModeGitlink && sp.WantFile(p) {
+				if n != nil && !n.IsDir() && materialized(*n, p, sp) {
 					writes[p] = *n
 				}
 			}
