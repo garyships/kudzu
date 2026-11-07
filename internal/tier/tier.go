@@ -12,10 +12,13 @@ package tier
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"sync"
@@ -31,10 +34,15 @@ type Tier struct {
 	Name  string
 	Local store.Objects
 	Up    *proto.Remote
+	// Log gets what the tier keeps from its clients, such as why a fetch
+	// failed; nil means the standard logger.
+	Log *log.Logger
 
-	mu       sync.Mutex
-	inflight map[object.ID]*call
-	start    time.Time
+	mu          sync.Mutex
+	inflight    map[object.ID]*call
+	maxInflight int
+	room        chan struct{} // closed once inflight has room again; nil if nobody waits
+	start       time.Time
 
 	counters   proto.Counters
 	hits       atomic.Int64
@@ -46,11 +54,29 @@ type Tier struct {
 	upFailures atomic.Int64
 }
 
+// A request's misses go upstream at most upstreamChunk per request and
+// upstreamParallelism requests at a time, as proto.Remote.Fetch sends them,
+// so one large request can't take every upstream slot or pile up answers.
+const (
+	upstreamChunk       = 4096
+	upstreamParallelism = 4
+)
+
+// A call is the fetch of one object for the requests waiting for it.
 type call struct {
-	done    chan struct{}
+	id      object.ID
+	done    chan struct{} // closed under Tier.mu once the result is set
+	waiters int           // guarded by Tier.mu; 0 once abandoned
+	job     *job          // guarded by Tier.mu
 	data    []byte
 	missing bool
 	err     error
+}
+
+// A job is one upstream request.
+type job struct {
+	live   int // its calls not done and still waited for; guarded by Tier.mu
+	cancel context.CancelFunc
 }
 
 // New returns a tier that fetches misses through up, with at most
@@ -67,7 +93,10 @@ func New(name string, local store.Objects, up *proto.Remote, upstreamConcurrency
 		Local:    local,
 		Up:       up,
 		inflight: map[object.ID]*call{},
-		start:    time.Now(),
+		// Enough to fill every upstream request in flight and as many again
+		// waiting for a slot; more would only queue, holding memory.
+		maxInflight: 2 * upstreamConcurrency * upstreamChunk,
+		start:       time.Now(),
 	}
 }
 
@@ -95,126 +124,227 @@ func (t *Tier) FetchMany(ctx context.Context, ids []object.ID, emit func(object.
 	t.misses.Add(int64(len(misses)))
 
 	calls := make([]*call, len(misses))
-	var mine []object.ID
-	var late []object.ID
-	t.mu.Lock()
-	for i, id := range misses {
-		if c, ok := t.inflight[id]; ok {
-			calls[i] = c
-			t.coalesced.Add(1)
-			continue
-		}
-		// A fetch may have finished between our lookup and taking the lock;
-		// fetchUpstream stores before it clears inflight, so check again.
-		if ok, _ := t.Local.Has(ctx, id); ok {
-			late = append(late, id)
-			continue
-		}
-		c := &call{done: make(chan struct{})}
-		t.inflight[id] = c
-		calls[i] = c
-		mine = append(mine, id)
-	}
-	t.mu.Unlock()
+	// What this request stops waiting for early (it hung up or failed) may
+	// be wanted by nobody else, and is then no longer fetched.
+	pending := calls
+	defer func() { t.release(pending) }()
 	var missing []object.ID
-	for _, id := range late {
-		b, err := t.Local.Get(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
-			// Evicted again in between (memory pressure): start over for it.
-			m, err := t.FetchMany(ctx, []object.ID{id}, emit)
-			if err != nil {
-				return nil, err
+	answered := 0
+	answer := func(upTo int) error {
+		for ; answered < upTo; answered++ {
+			c := calls[answered]
+			select {
+			case <-c.done:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			missing = append(missing, m...)
-			continue
+			pending = calls[answered+1:]
+			if c.err != nil {
+				return c.err
+			}
+			if c.missing {
+				missing = append(missing, misses[answered])
+			} else if err := emit(misses[answered], c.data); err != nil {
+				return err
+			}
 		}
-		if err != nil {
+		return nil
+	}
+	for i := 0; i < len(misses); {
+		// At most upstreamParallelism requests' worth of misses waiting.
+		if err := answer(i - (upstreamParallelism-1)*upstreamChunk); err != nil {
 			return nil, err
 		}
-		t.coalesced.Add(1)
-		if err := emit(id, b); err != nil {
+		var err error
+		if i, err = t.join(ctx, misses, calls, i); err != nil {
 			return nil, err
 		}
 	}
-	if len(mine) > 0 {
-		// Detached from this request: other requests may be waiting on it.
-		go t.fetchUpstream(mine)
-	}
-
-	for i, c := range calls {
-		if c == nil {
-			continue // served above
-		}
-		select {
-		case <-c.done:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		if c.err != nil {
-			return nil, c.err
-		}
-		if c.missing {
-			missing = append(missing, misses[i])
-			continue
-		}
-		if err := emit(misses[i], c.data); err != nil {
-			return nil, err
-		}
+	if err := answer(len(misses)); err != nil {
+		return nil, err
 	}
 	return missing, nil
 }
 
-func (t *Tier) fetchUpstream(ids []object.ID) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	t.upRequests.Add(1)
-	got := make(map[object.ID]bool, len(ids))
-	missing, err := t.Up.Fetch(ctx, ids, func(id object.ID, b []byte) error {
-		t.upObjects.Add(1)
-		t.upBytes.Add(int64(len(b)))
-		got[id] = true
-		// Whatever is stored here is served to every client from now on,
-		// so a copy damaged on the way fails this fetch instead.
-		if _, err := object.Check(id, b); err != nil {
-			t.upFailures.Add(1)
-			t.complete(id, nil, false, fmt.Errorf("from upstream %s: %w", t.Up.Addr, err))
-			return nil
-		}
-		t.Local.Put(ctx, id, b)
-		t.complete(id, b, false, nil)
-		return nil
-	})
-	if err != nil {
-		t.upFailures.Add(1)
-	}
-	isMissing := make(map[object.ID]bool, len(missing))
-	for _, id := range missing {
-		isMissing[id] = true
-	}
-	for _, id := range ids {
-		if got[id] {
+// join makes the request a waiter on a call for each of ids[i:], up to one
+// upstream request's worth, joining the call in flight or starting a new
+// one, and returns where it stopped. While maxInflight misses are in
+// flight, it waits for room rather than add more.
+func (t *Tier) join(ctx context.Context, ids []object.ID, calls []*call, i int) (int, error) {
+	end := min(len(ids), i+upstreamChunk)
+	var mine []*call
+	var room chan struct{}
+	t.mu.Lock()
+	for ; i < end; i++ {
+		if c, ok := t.inflight[ids[i]]; ok {
+			c.waiters++
+			calls[i] = c
+			t.coalesced.Add(1)
 			continue
 		}
-		if isMissing[id] {
-			t.complete(id, nil, true, nil)
-		} else {
-			if err == nil {
-				err = errors.New("upstream did not return object")
+		if len(t.inflight) >= t.maxInflight {
+			if t.room == nil {
+				t.room = make(chan struct{})
 			}
-			t.complete(id, nil, false, err)
+			room = t.room
+			break
+		}
+		c := &call{id: ids[i], done: make(chan struct{}), waiters: 1}
+		t.inflight[c.id] = c
+		calls[i] = c
+		mine = append(mine, c)
+	}
+	t.mu.Unlock()
+	t.launch(ctx, mine)
+	if room != nil {
+		select {
+		case <-room:
+		case <-ctx.Done():
+			return i, ctx.Err()
+		}
+	}
+	return i, nil
+}
+
+// launch fetches calls upstream, except objects stored since the request
+// missed them: a fetch may have finished in between (fetchUpstream stores
+// before it completes). This runs outside t.mu, as each check can be a file
+// system stat.
+func (t *Tier) launch(ctx context.Context, calls []*call) {
+	var fetch []*call
+	for _, c := range calls {
+		if ok, _ := t.Local.Has(ctx, c.id); ok {
+			if b, err := t.Local.Get(ctx, c.id); err == nil {
+				t.coalesced.Add(1)
+				t.complete(c, b, false, nil)
+				continue
+			}
+		}
+		fetch = append(fetch, c)
+	}
+	if len(fetch) > 0 {
+		// Detached from this request: other requests may be waiting on it.
+		go t.fetchUpstream(fetch)
+	}
+}
+
+// release stops the request waiting for calls. A call nobody waits for any
+// more leaves inflight, so the next request for its object starts afresh,
+// and an upstream request none of whose objects is still wanted is
+// cancelled.
+func (t *Tier) release(calls []*call) {
+	if len(calls) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range calls {
+		if c == nil {
+			continue // never joined: the request gave up waiting for room
+		}
+		select {
+		case <-c.done:
+			continue
+		default:
+		}
+		if c.waiters--; c.waiters > 0 {
+			continue
+		}
+		t.remove(c)
+		if j := c.job; j != nil {
+			if j.live--; j.live == 0 {
+				j.cancel()
+			}
 		}
 	}
 }
 
-func (t *Tier) complete(id object.ID, data []byte, missing bool, err error) {
-	t.mu.Lock()
-	c := t.inflight[id]
-	delete(t.inflight, id)
-	t.mu.Unlock()
-	if c != nil {
-		c.data, c.missing, c.err = data, missing, err
-		close(c.done)
+// remove takes c out of inflight; t.mu is held.
+func (t *Tier) remove(c *call) {
+	delete(t.inflight, c.id)
+	// Wake requests waiting for room once there is a fair amount of it,
+	// not on every object.
+	if t.room != nil && len(t.inflight) <= t.maxInflight-t.maxInflight/4 {
+		close(t.room)
+		t.room = nil
 	}
+}
+
+// fetchUpstream fetches calls, at most upstreamChunk of them, in one
+// upstream request. It runs detached from the requests waiting for them, so
+// one client hanging up doesn't fail the others, until none of them is
+// wanted any more.
+func (t *Tier) fetchUpstream(calls []*call) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	j := &job{cancel: cancel}
+	ids := make([]object.ID, 0, len(calls))
+	byID := make(map[object.ID]*call, len(calls))
+	t.mu.Lock()
+	for _, c := range calls {
+		if c.waiters == 0 {
+			continue // abandoned already
+		}
+		c.job = j
+		j.live++
+		ids = append(ids, c.id)
+		byID[c.id] = c
+	}
+	t.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	t.upRequests.Add(1)
+	missing, err := t.Up.Fetch(ctx, ids, func(id object.ID, b []byte) error {
+		c := byID[id]
+		if c == nil {
+			return nil
+		}
+		delete(byID, id)
+		t.upObjects.Add(1)
+		t.upBytes.Add(int64(len(b)))
+		// Whatever is stored here is served to every client from now on,
+		// so a copy damaged on the way fails this fetch instead.
+		if _, err := object.Check(id, b); err != nil {
+			t.upFailures.Add(1)
+			t.complete(c, nil, false, fmt.Errorf("from upstream %s: %w", t.Up.Addr, err))
+			return nil
+		}
+		t.Local.Put(ctx, id, b)
+		t.complete(c, b, false, nil)
+		return nil
+	})
+	if err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		t.upFailures.Add(1) // but not when cancelled for want of waiters
+	}
+	for _, id := range missing {
+		if c := byID[id]; c != nil {
+			delete(byID, id)
+			t.complete(c, nil, true, nil)
+		}
+	}
+	if err == nil {
+		err = errors.New("upstream did not return object")
+	}
+	for _, c := range byID {
+		t.complete(c, nil, false, err)
+	}
+}
+
+// complete settles c for every request waiting for it. An abandoned call is
+// left alone: inflight may hold a newer call for its object by now.
+func (t *Tier) complete(c *call, data []byte, missing bool, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c.waiters == 0 {
+		return
+	}
+	t.remove(c)
+	if c.job != nil {
+		c.job.live--
+	}
+	c.data, c.missing, c.err = data, missing, err
+	close(c.done)
 }
 
 // Seed loads a snapshot (a stream of frames) into the local store.
@@ -287,13 +417,50 @@ func (t *Tier) Stats() Stats {
 	return s
 }
 
+// clientSource is the tier as its clients see it. They may be anonymous,
+// and why a fetch failed can name upstream hosts, buckets, keys and local
+// paths, so they get a request ID and the tier's log gets the reason under
+// it, as the server does with its internal errors.
+type clientSource struct{ t *Tier }
+
+func (s clientSource) FetchMany(ctx context.Context, ids []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error) {
+	missing, err := s.t.FetchMany(ctx, ids, emit)
+	if err != nil {
+		var b [4]byte
+		rand.Read(b[:])
+		id := hex.EncodeToString(b[:])
+		if ctx.Err() == nil { // not just a client hanging up
+			s.t.logf("%s: fetching %d objects (request %s): %v", s.t.Name, len(ids), id, err)
+		}
+		err = fmt.Errorf("%s: fetching objects failed (request %s)", s.t.Name, id)
+	}
+	return missing, err
+}
+
+func (t *Tier) logf(format string, args ...any) {
+	if t.Log != nil {
+		t.Log.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
+}
+
 // Handler serves the object protocol locally and proxies the rest upstream.
 func (t *Tier) Handler() http.Handler {
 	mux := http.NewServeMux()
-	proto.RegisterObjectRoutes(mux, t, &t.counters)
-	proxy := httputil.NewSingleHostReverseProxy(t.Up.BaseURL())
-	proxy.Transport = t.Up.Transport()
-	proxy.FlushInterval = -1
+	proto.RegisterObjectRoutes(mux, clientSource{t}, &t.counters)
+	up := t.Up.BaseURL()
+	proxy := &httputil.ReverseProxy{
+		// The upstream gets its own host as Host, not the client's: behind
+		// an ingress that routes by Host, the client's could reach another
+		// site. Rewrite also drops the client's X-Forwarded-* headers, which
+		// nothing upstream reads. The client's own Authorization passes as
+		// is; the tier never adds its token to what it proxies.
+		Rewrite:       func(pr *httputil.ProxyRequest) { pr.SetURL(up) },
+		Transport:     t.Up.Transport(),
+		FlushInterval: -1,
+		ErrorLog:      t.Log,
+	}
 	mux.Handle("/api/", proxy)
 	mux.Handle("POST /objects/missing", proxy)
 	mux.Handle("POST /objects/upload", proxy)

@@ -299,6 +299,7 @@ func runTier(ctx context.Context, name, addr string, mode socketMode, upstream s
 	}
 	t := tier.New(name, local, up, concurrency)
 	logger := log.New(os.Stderr, "kudzu-"+name+" ", log.LstdFlags)
+	t.Log = logger
 	if seed != "" {
 		f, err := os.Open(seed)
 		if err != nil {
