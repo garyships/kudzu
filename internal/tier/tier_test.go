@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -161,6 +165,74 @@ func TestCorruptUpstreamObjectNotCached(t *testing.T) {
 	}
 	if ok, _ := local.Has(ctx, id); !ok {
 		t.Fatal("intact copy not stored")
+	}
+}
+
+// TestProxyHeaders: requests a tier proxies reach the upstream with the
+// upstream's own Host, so a client can't pick another site behind an
+// ingress that routes by Host, and with the client's own token, never the
+// tier's.
+func TestProxyHeaders(t *testing.T) {
+	type seen struct{ host, auth, xff, uri, body string }
+	got := make(chan seen, 1)
+	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got <- seen{r.Host, r.Header.Get("Authorization"), r.Header.Get("X-Forwarded-For"), r.RequestURI, string(b)}
+		io.WriteString(w, "from upstream")
+	})
+	via := func(t *testing.T, up *proto.Remote, method, path, auth, body string) seen {
+		t.Helper()
+		up.Token = "tier-secret"
+		srv := httptest.NewServer(New("cache", store.NewMem(1<<20), up, 2).Handler())
+		defer srv.Close()
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Host = "admin.internal.example"
+		req.Header.Set("X-Forwarded-For", "10.9.9.9")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if b, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusOK || string(b) != "from upstream" {
+			t.Fatalf("%s %s: %d %q", method, path, resp.StatusCode, b)
+		}
+		return <-got
+	}
+
+	upSrv := httptest.NewServer(record)
+	defer upSrv.Close()
+	up, _ := proto.Dial(upSrv.URL)
+	upHost := strings.TrimPrefix(upSrv.URL, "http://")
+	s := via(t, up, "GET", "/api/log?rev=main&n=1", "Bearer client-token", "")
+	if want := (seen{upHost, "Bearer client-token", "", "/api/log?rev=main&n=1", ""}); s != want {
+		t.Fatalf("upstream saw %+v, want %+v", s, want)
+	}
+	s = via(t, up, "POST", "/objects/missing", "", `{"ids":[]}`)
+	if want := (seen{upHost, "", "", "/objects/missing", `{"ids":[]}`}); s != want {
+		t.Fatalf("upstream saw %+v, want %+v", s, want)
+	}
+
+	// An upstream on a unix socket (a short path: socket paths are
+	// length-limited).
+	dir, err := os.MkdirTemp("", "kt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	l, err := net.Listen("unix", filepath.Join(dir, "up.sock"))
+	if err != nil {
+		t.Skipf("no unix sockets: %v", err)
+	}
+	sockSrv := &http.Server{Handler: record}
+	go sockSrv.Serve(l)
+	defer sockSrv.Close()
+	up, _ = proto.Dial("unix://" + filepath.Join(dir, "up.sock"))
+	s = via(t, up, "GET", "/api/resolve?rev=main", "Bearer client-token", "")
+	if want := (seen{"unix", "Bearer client-token", "", "/api/resolve?rev=main", ""}); s != want {
+		t.Fatalf("upstream on a unix socket saw %+v, want %+v", s, want)
 	}
 }
 

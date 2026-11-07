@@ -415,9 +415,17 @@ func (t *Tier) Stats() Stats {
 func (t *Tier) Handler() http.Handler {
 	mux := http.NewServeMux()
 	proto.RegisterObjectRoutes(mux, t, &t.counters)
-	proxy := httputil.NewSingleHostReverseProxy(t.Up.BaseURL())
-	proxy.Transport = t.Up.Transport()
-	proxy.FlushInterval = -1
+	up := t.Up.BaseURL()
+	proxy := &httputil.ReverseProxy{
+		// The upstream gets its own host as Host, not the client's: behind
+		// an ingress that routes by Host, the client's could reach another
+		// site. Rewrite also drops the client's X-Forwarded-* headers, which
+		// nothing upstream reads. The client's own Authorization passes as
+		// is; the tier never adds its token to what it proxies.
+		Rewrite:       func(pr *httputil.ProxyRequest) { pr.SetURL(up) },
+		Transport:     t.Up.Transport(),
+		FlushInterval: -1,
+	}
 	mux.Handle("/api/", proxy)
 	mux.Handle("POST /objects/missing", proxy)
 	mux.Handle("POST /objects/upload", proxy)
