@@ -127,12 +127,14 @@ func cmdUp(ctx context.Context, args []string) error {
 	srv := server.New(r, log.New(logOut, "kudzu-server ", log.LstdFlags))
 	toServer, _ := proto.Dial(serverAddr)
 	cache := tier.New("cache", store.NewMem(1<<30), toServer, 32)
+	cache.Log = log.New(logOut, "kudzu-cache ", log.LstdFlags)
 	daemonObjs, err := store.OpenFS(filepath.Join(*dir, "daemon"), 10<<30)
 	if err != nil {
 		return err
 	}
 	toCache, _ := proto.Dial(cacheAddr)
 	daemon := tier.New("daemon", daemonObjs, toCache, 8)
+	daemon.Log = log.New(logOut, "kudzu-daemon ", log.LstdFlags)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
