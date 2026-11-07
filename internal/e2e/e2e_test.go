@@ -327,6 +327,7 @@ func TestCacheCoalescing(t *testing.T) {
 // TestConcurrentAgents: many agents each make a change in their own directory
 // and land it at the same time, through the full stack.
 func TestConcurrentAgents(t *testing.T) {
+	t.Parallel()
 	s := newStack(t)
 	s.seed(t)
 	ctx := context.Background()

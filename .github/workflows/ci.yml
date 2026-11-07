@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run for the one before.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # The oldest Go that go.mod allows, at its latest patch release, and the
   # current stable release. go.mod follows the oldest Go release that still
@@ -19,8 +24,8 @@ jobs:
         go: ["1.26.x", "stable"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
         with:
           go-version: ${{ matrix.go }}
       - name: gofmt
@@ -31,18 +36,21 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      # govulncheck judges the standard library by the Go running it, so
+      # take the newest patch even before the runner image carries it.
+      - uses: ./.github/actions/setup-go
         with:
           go-version: "1.26.x"
+          check-latest: true
       - run: go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
       - run: staticcheck ./... && staticcheck -tags fuse ./...
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - run: govulncheck ./...
 
-  # Releases ship macOS and Windows binaries too. macOS runs every test;
-  # Windows builds and vets everything and tests the packages that do not
-  # depend on unix sockets, symlinks or exec bits.
+  # Releases ship macOS and Windows binaries too. Both vet everything (which
+  # type-checks every package); macOS runs every test, Windows the packages
+  # that do not depend on unix sockets, symlinks or exec bits.
   other-os:
     strategy:
       fail-fast: false
@@ -50,11 +58,10 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
         with:
           go-version: "1.26.x"
-      - run: go build ./...
       - run: go vet ./...
       - if: runner.os == 'macOS'
         run: go test ./...
@@ -65,8 +72,8 @@ jobs:
   fuse:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
         with:
           go-version: "1.26.x"
       - run: sudo apt-get update && sudo apt-get install -y fuse3
@@ -92,22 +99,31 @@ jobs:
       AWS_ACCESS_KEY_ID: kudzu
       AWS_SECRET_ACCESS_KEY: kudzu-secret
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
+      - uses: actions/checkout@v7
       # MinIO no longer publishes images. SeaweedFS's S3 gateway takes the
-      # keys above; curl signs the request that creates the bucket.
+      # keys above. It starts in the background, so that pulling its image
+      # overlaps setting up Go and compiling the tests.
       - name: start SeaweedFS
         run: |
           cat > "$RUNNER_TEMP/s3.json" <<EOF
           {"identities": [{"name": "kudzu", "credentials": [{"accessKey": "$AWS_ACCESS_KEY_ID", "secretKey": "$AWS_SECRET_ACCESS_KEY"}], "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
           EOF
           docker run -d --name seaweedfs -p 8333:8333 -v "$RUNNER_TEMP/s3.json:/etc/seaweedfs/s3.json:ro" \
-            chrislusf/seaweedfs:4.48 server -s3 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=64
+            chrislusf/seaweedfs:4.48 server -s3 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=64 \
+            > "$RUNNER_TEMP/seaweedfs.log" 2>&1 &
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: "1.26.x"
+      - name: build the tests
+        run: go test -race -run '^$' ./internal/store/... ./internal/repo/ ./internal/e2e/
+      # curl signs the request that creates the bucket.
+      - name: wait for SeaweedFS
+        run: |
           sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
           for i in $(seq 90); do curl -sf "${sign[@]}" -X PUT http://127.0.0.1:8333/kudzu-test && break; sleep 1; done
           curl -sSf "${sign[@]}" -o /dev/null "http://127.0.0.1:8333/kudzu-test?list-type=2"
-      - run: go test -race ./internal/store/... ./internal/repo/ ./internal/e2e/
+      # -count=1: Go's test cache cannot see Postgres or SeaweedFS, so a
+      # result cached by an earlier run proves nothing about this one.
+      - run: go test -race -count=1 ./internal/store/... ./internal/repo/ ./internal/e2e/
       - if: failure()
-        run: docker logs seaweedfs
+        run: cat "$RUNNER_TEMP/seaweedfs.log"; docker logs seaweedfs

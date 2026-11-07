@@ -1,0 +1,35 @@
+name: setup-go with a cache per job
+description: >-
+  actions/setup-go, with Go's module and build caches keyed by job as well.
+  setup-go's own cache is one entry per Go version and go.mod, which jobs
+  that build differently (-race, -tags fuse, linters) share: whichever job
+  finishes first saves it, and the others restore builds they cannot use.
+inputs:
+  go-version:
+    description: Go version or range, as for actions/setup-go.
+    required: true
+  check-latest:
+    description: Take the newest patch even when the runner image has an older one.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - id: setup
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        check-latest: ${{ inputs.check-latest }}
+        cache: false
+    - id: dirs
+      shell: bash
+      run: |
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+        echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+    # A new go.sum starts from this job's previous cache for the same Go.
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ${{ steps.dirs.outputs.build }}
+          ${{ steps.dirs.outputs.mod }}
+        key: go-${{ runner.os }}-${{ github.job }}-${{ steps.setup.outputs.go-version }}-${{ hashFiles('go.sum') }}
+        restore-keys: go-${{ runner.os }}-${{ github.job }}-${{ steps.setup.outputs.go-version }}-
