@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/garyships/kudzu/internal/lru"
 	"github.com/garyships/kudzu/internal/object"
@@ -145,6 +146,23 @@ func (r *Repo) readText(ctx context.Context, id object.ID) ([]byte, error) {
 		return nil, errTooLarge
 	}
 	return b, err
+}
+
+// CopyBlob writes a blob's content to w and returns its size. It holds only
+// the blob's stored form (see object.WriteContent), so serving or measuring
+// a small stored blob that inflates to a gigabyte costs no memory for it.
+func (r *Repo) CopyBlob(ctx context.Context, id object.ID, w io.Writer) (int64, error) {
+	stored, err := r.Objs.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, fmt.Errorf("%s %s: %w", object.KindBlob, id.Short(), store.ErrNotFound)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(stored) > 0 && object.Kind(stored[0]) != object.KindBlob {
+		return 0, fmt.Errorf("object %s is a %s, not a %s", id.Short(), object.Kind(stored[0]), object.KindBlob)
+	}
+	return object.WriteContent(w, stored)
 }
 
 func (r *Repo) WriteBlob(ctx context.Context, content []byte) (object.ID, error) {

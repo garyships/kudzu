@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/adler32"
+	"io"
 	"runtime"
 	"strings"
 	"testing"
@@ -101,6 +102,35 @@ func TestCheckDoesNotInflateIntoMemory(t *testing.T) {
 	stored[len(stored)-1] ^= 1
 	if _, err := Check(id, stored); err == nil {
 		t.Fatal("corruption not detected")
+	}
+}
+
+// TestWriteContent: content is written as Decode returns it, compressed or
+// not, and a payload that inflates to 16 MiB costs no memory for it.
+func TestWriteContent(t *testing.T) {
+	for _, content := range [][]byte{nil, []byte("x"), bytes.Repeat([]byte("abc\n"), 1000)} {
+		for _, stored := range [][]byte{Encode(KindBlob, content), append([]byte{byte(KindBlob), codecRaw}, content...)} {
+			var buf bytes.Buffer
+			n, err := WriteContent(&buf, stored)
+			if err != nil || n != int64(len(content)) || !bytes.Equal(buf.Bytes(), content) {
+				t.Fatalf("codec %d: wrote %d bytes, %v", stored[1], n, err)
+			}
+		}
+	}
+	stored := Encode(KindBlob, make([]byte, 16<<20))
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	n, err := WriteContent(io.Discard, stored)
+	runtime.ReadMemStats(&after)
+	if err != nil || n != 16<<20 {
+		t.Fatalf("wrote %d bytes, %v", n, err)
+	}
+	if a := after.TotalAlloc - before.TotalAlloc; a > 1<<20 {
+		t.Fatalf("WriteContent of a %d-byte payload allocated %d bytes", len(stored), a)
+	}
+	if _, err := WriteContent(io.Discard, []byte{byte(KindBlob)}); err == nil {
+		t.Fatal("an object too short was written")
 	}
 }
 

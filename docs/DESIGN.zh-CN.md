@@ -180,7 +180,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 `kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` 把一个版本挂载成只读文件系统，事先什么都不下载，任务只为它真正读到的内容付费：
 
 - 目录第一次被列出、或者第一次有路径经过它时，才取它的 tree 对象；文件第一次被读时，才取它的 blob。都通过对象协议（通常是节点 daemon）获取，像其他对象一样校验，并放进本地缓存（内存，或 `--cache DIR`）。同一对象的并发读取共用一次请求。
-- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端读取它本来就有的 blob），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
+- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端在解压它本来就有的 blob 时边解压边计数，不把内容留在内存里，并缓存结果），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
 - 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
 - `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。
 

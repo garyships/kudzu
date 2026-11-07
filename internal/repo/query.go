@@ -124,22 +124,31 @@ func (r *Repo) Blame(ctx context.Context, head object.ID, path string) ([]BlameL
 
 // ReadFile returns the entry and content of a file at a changeset.
 func (r *Repo) ReadFile(ctx context.Context, cs object.ID, path string) (object.Entry, []byte, error) {
-	tree, err := r.TreeOf(ctx, cs)
+	e, err := r.FileEntry(ctx, cs, path)
 	if err != nil {
-		return object.Entry{}, nil, err
-	}
-	e, ok, err := r.LookupPath(ctx, tree, path)
-	if err != nil {
-		return object.Entry{}, nil, err
-	}
-	if !ok {
-		return object.Entry{}, nil, fmt.Errorf("%s: %w at %s", path, store.ErrNotFound, cs.Short())
-	}
-	if e.IsDir() {
-		return e, nil, fmt.Errorf("%w: %s is a directory", ErrInvalid, path)
+		return e, nil, err
 	}
 	b, err := r.ReadBlob(ctx, e.ID)
 	return e, b, err
+}
+
+// FileEntry returns the entry of a file at a changeset.
+func (r *Repo) FileEntry(ctx context.Context, cs object.ID, path string) (object.Entry, error) {
+	tree, err := r.TreeOf(ctx, cs)
+	if err != nil {
+		return object.Entry{}, err
+	}
+	e, ok, err := r.LookupPath(ctx, tree, path)
+	if err != nil {
+		return object.Entry{}, err
+	}
+	if !ok {
+		return object.Entry{}, fmt.Errorf("%s: %w at %s", path, store.ErrNotFound, cs.Short())
+	}
+	if e.IsDir() {
+		return e, fmt.Errorf("%w: %s is a directory", ErrInvalid, path)
+	}
+	return e, nil
 }
 
 // ListDir returns the entries of a directory at a changeset.

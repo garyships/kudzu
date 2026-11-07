@@ -833,15 +833,28 @@ func (s *Server) handleCat(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	e, b, err := s.Repo.ReadFile(ctx, id, path)
+	e, err := s.Repo.FileEntry(ctx, id, path)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Kudzu-Mode", strconv.FormatUint(uint64(e.Mode), 8))
-	w.Header().Set("X-Kudzu-Blob", e.ID.String())
-	w.Write(b)
+	h := w.Header()
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("X-Kudzu-Mode", strconv.FormatUint(uint64(e.Mode), 8))
+	h.Set("X-Kudzu-Blob", e.ID.String())
+	// Stream the content: a small stored blob can inflate to a gigabyte,
+	// which every request for it would otherwise hold in memory.
+	if n, err := s.Repo.CopyBlob(ctx, e.ID, w); err != nil {
+		if n == 0 {
+			h.Del("X-Kudzu-Mode")
+			h.Del("X-Kudzu-Blob")
+			s.fail(w, err)
+			return
+		}
+		s.Log.Printf("cat %s: %v", path, err)
+		// A clean end would pass part of the file off as all of it.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
@@ -897,12 +910,12 @@ func (s *Server) handleSizes(w http.ResponseWriter, r *http.Request) {
 		}
 		size, ok := s.sizes.Get(e.ID)
 		if !ok {
-			b, err := s.Repo.ReadBlob(ctx, e.ID)
-			if err != nil {
+			// Count the content rather than hold it: trees don't record
+			// sizes, and a small stored blob can inflate to a gigabyte.
+			if size, err = s.Repo.CopyBlob(ctx, e.ID, io.Discard); err != nil {
 				s.fail(w, err)
 				return
 			}
-			size = int64(len(b))
 			s.sizes.Add(e.ID, size)
 		}
 		out[e.Name] = size

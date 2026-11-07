@@ -180,7 +180,7 @@ Every tier closes keep-alive connections that have been idle for two minutes, bu
 `kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` presents a revision as a read-only filesystem that downloads nothing up front, so a job pays only for what it reads:
 
 - A directory's tree object is fetched the first time the directory is listed or a path through it is looked up; a file's blob, the first time the file is read. Both go through the object protocol, normally to the node daemon, are verified like any other object, and are kept in a local cache (memory, or `--cache DIR`). Concurrent reads of the same object share one fetch.
-- Trees don't record file sizes, and `stat` must report them before a file is read. `GET /api/sizes?tree=ID` returns them for one directory in one request (the server reads the blobs it already has), so `ls -l` is exact without moving any file content.
+- Trees don't record file sizes, and `stat` must report them before a file is read. `GET /api/sizes?tree=ID` returns them for one directory in one request (the server counts the bytes of the blobs it already has as it inflates them, without holding their content, and remembers the sizes), so `ls -l` is exact without moving any file content.
 - A revision never changes, so the kernel may cache entries, attributes and pages indefinitely (`FOPEN_KEEP_CACHE`, long timeouts). Files take their changeset's time as mtime. Sparse cones and access-control filtering apply as in a checkout.
 - `internal/vfs` has no FUSE dependency and is tested on its own; `internal/fusefs` adapts it with [go-fuse](https://github.com/hanwen/go-fuse) and is only compiled with `-tags fuse`, so the default binary does not include it.
 

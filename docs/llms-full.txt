@@ -219,7 +219,7 @@ Objects are fetched by ID, so a caller with restricted read access only ever rec
 - `GET /api/log?rev=&path=&limit=` → an array of changesets as above, without `changes`, `seq` or `tree` (`change_count` gives the number of changed files). First-parent history, or with `path` the changesets that changed that file or directory. `limit` defaults to 50, at most 10000.
 - `GET /api/blame?rev=&path=` → `[{"line", "changeset", "text" (with its newline), "author", "time"}]`. 400 for directories, binary files and files over 8 MiB or 200,000 lines.
 - `GET /api/diff?to=&from=&merge_base=1&path=&patch=1` → `{"from", "to", "files": [{"path", "old"?: entry, "new"?: entry}], "patch"?}`. `from` defaults to the first parent of `to`. A missing `old` means added, a missing `new` means deleted. An entry is `{"name", "mode", "id"}`. `patch=1` adds a unified diff (`diff --kudzu a/P b/P` headers). A file over 8 MiB or 200,000 lines gets `Files a/P and b/P differ (too large to diff by lines)` instead of hunks. One patch reads at most 32 MiB or 800,000 lines of content in all (both sides of each file, a file over the limits counting as 8 MiB); the files after that get `Files a/P and b/P differ (patch too large; diff this path on its own)`.
-- `GET /api/cat?rev=&path=` → raw bytes, with headers `X-Kudzu-Mode` (octal) and `X-Kudzu-Blob`.
+- `GET /api/cat?rev=&path=` → raw bytes, with headers `X-Kudzu-Mode` (octal) and `X-Kudzu-Blob`. The content is streamed: if reading it fails partway, the response breaks off rather than ending.
 - `GET /api/ls?rev=&path=` → `[{"name", "mode", "id"}]`. A file path returns its own entry.
 - `GET /api/ancestry?a=&b=` → `{"a", "b", "merge_base", "a_is_ancestor_of_b", "b_is_ancestor_of_a"}`
 - `GET /api/refs` → `{"main": "<id>", ...}`
