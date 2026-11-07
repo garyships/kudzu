@@ -47,10 +47,18 @@ func TestUp(t *testing.T) {
 	defer os.RemoveAll(sockDir)
 	sock := filepath.Join(sockDir, "up.sock")
 
+	// The server's and cache's sockets go in a new directory under TMPDIR.
+	tmp := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("TMP", tmp)
+	} else {
+		t.Setenv("TMPDIR", tmp)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- cmdUp(ctx, []string{"--git", repoDir, "--dir", t.TempDir(), "--port", "0", "--socket", sock})
+		done <- cmdUp(ctx, []string{"--git", repoDir, "--dir", t.TempDir(), "--socket", sock})
 	}()
 	rem, _ := proto.Dial("unix://" + sock)
 	var log []struct {
@@ -79,12 +87,39 @@ func TestUp(t *testing.T) {
 	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("daemon socket mode %v, want 0600 (only this user may connect)", fi.Mode().Perm())
 	}
+	// The server and cache serve everything without a token, so they must
+	// be no easier to reach than the daemon: owner-only sockets in a
+	// private directory, not TCP ports any local user can connect to.
+	dirs, _ := filepath.Glob(filepath.Join(tmp, "kudzu-up-*"))
+	if len(dirs) != 1 {
+		t.Fatalf("want one private socket directory in TMPDIR, found %v", dirs)
+	}
+	if fi, err := os.Stat(dirs[0]); err != nil {
+		t.Fatal(err)
+	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 {
+		t.Fatalf("socket directory mode %v, want 0700", fi.Mode().Perm())
+	}
+	for _, name := range []string{"server.sock", "cache.sock"} {
+		p := filepath.Join(dirs[0], name)
+		if fi, err := os.Stat(p); err != nil {
+			t.Fatal(err)
+		} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode %v, want 0600", name, fi.Mode().Perm())
+		}
+		tier, _ := proto.Dial("unix://" + p)
+		if b, err := tier.GetRaw(context.Background(), "/api/cat", url.Values{"rev": {"main"}, "path": {"hello.txt"}}); err != nil || string(b) != "hi\n" {
+			t.Fatalf("cat through %s = %q, %v", name, b, err)
+		}
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("up returned %v", err)
 	}
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Fatal("socket not removed on shutdown")
+	}
+	if _, err := os.Stat(dirs[0]); !os.IsNotExist(err) {
+		t.Fatal("socket directory not removed on shutdown")
 	}
 }
 

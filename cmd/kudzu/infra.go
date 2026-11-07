@@ -166,6 +166,43 @@ func serve(ctx context.Context, addr string, mode socketMode, h http.Handler, lo
 	return serveListener(ctx, l, h)
 }
 
+// guardBrowsers keeps web pages away from a tier. Kudzu's clients are never
+// browsers, but a page the user visits can make the browser send requests
+// to a tier on this machine: writes from another origin (CSRF), and, once
+// the page's own host name is rebound to 127.0.0.1, reads as well. net/http's
+// CrossOriginProtection refuses the cross-origin writes. A tier on a
+// loopback address also answers only to Host names a rebinding page cannot
+// use, localhost and IP addresses; a tier on any other address cannot know
+// its names, and should run with --auth anyway.
+func guardBrowsers(l net.Listener, h http.Handler) http.Handler {
+	h = http.NewCrossOriginProtection().Handler(h)
+	if a, ok := l.Addr().(*net.TCPAddr); !ok || !a.IP.IsLoopback() {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackHost(r.Host) {
+			http.Error(w, fmt.Sprintf("this tier listens on loopback and answers only to localhost or an IP address, not Host %q", r.Host), http.StatusMisdirectedRequest)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// loopbackHost reports whether a Host header names this machine in a way
+// no web page's origin can: an IP address, or localhost, which browsers
+// resolve themselves.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	return net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")) != nil
+}
+
 // idleTimeout closes keep-alive connections nobody uses. Clients drop theirs
 // after 90 seconds (proto.Dial), so normally they close first.
 var idleTimeout = 2 * time.Minute
@@ -173,7 +210,7 @@ var idleTimeout = 2 * time.Minute
 func serveListener(ctx context.Context, l net.Listener, h http.Handler) error {
 	// No ReadTimeout or WriteTimeout: uploads, snapshots and lands can
 	// rightly take longer than any fixed bound.
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: idleTimeout}
+	srv := &http.Server{Handler: guardBrowsers(l, h), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: idleTimeout}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -231,6 +268,8 @@ func cmdServer(ctx context.Context, args []string) error {
 	srv.Auth = policy
 	if policy != nil {
 		logger.Printf("enforcing access policy %s", *authFile)
+	} else if !strings.HasPrefix(*addr, "unix://") {
+		logger.Printf("no --auth: anyone who can connect to %s can read everything and land; pass --auth, or listen on a unix:// socket", *addr)
 	}
 	return serve(ctx, *addr, *sockMode, srv.Handler(), logger)
 }
