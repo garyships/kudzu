@@ -106,7 +106,7 @@ type Deriver struct {
 
 **blame**：用文件 unode 的上一个版本当父节点。没变的行沿用上一版的归属，新增或修改的行归到当前 linknode。差异计算用 Myers diff（`internal/textdiff`）。
 
-按行处理的开销是逐行算的：行很短时，内存占用是文件大小的许多倍，Myers 的耗时也随行数增长。所以超过 8 MiB 或 200,000 行的内容（`textdiff.MaxBytes`、`textdiff.MaxLines`）和二进制文件一样，从不按行做 diff 或合并：patch 里只显示 `Files a/P and b/P differ (too large to diff by lines)`，不给出 hunk；对它做三方合并算冲突。blame 拒绝这样的文件（400）；它的 blame 值只记下这一点，不需要把 blob 整个读出来或拆成行；之后回到上限以内的版本，按新文件算 blame。这些操作读取 blob 时把字节上限当作解压上限，所以一个存储形式很小、解压后有 1 GiB 的 blob，最多也只占 8 MiB。一个 patch 总共最多读取四倍上限的内容（`repo.PatchLimit`，每个文件的两边都算），超出之后的文件同样只列出名字，不给出 hunk。同一时间最多有四个 blame 计算和文件三方合并在跑（`repo.lineWorkers`），每个只在调用方还在等的时候排队；blame 计算是在派生过程内部排队的，所以挂断的调用方不会让同时在跑的计算变多。
+按行处理的开销是逐行算的：行很短时，内存占用是文件大小的许多倍，Myers 的耗时也随行数增长。所以超过 8 MiB 或 200,000 行的内容（`textdiff.MaxBytes`、`textdiff.MaxLines`）和二进制文件一样，从不按行做 diff 或合并：patch 里只显示 `Files a/P and b/P differ (too large to diff by lines)`，不给出 hunk；对它做三方合并算冲突。blame 拒绝这样的文件（400）；它的 blame 值只记下这一点，不需要把 blob 整个读出来或拆成行；之后回到上限以内的版本，按新文件算 blame。这些操作读取 blob 时把字节上限当作解压上限，所以一个存储形式很小、解压后有 1 GiB 的 blob，最多也只占 8 MiB。一个 patch 总共最多读取四倍上限的内容（`repo.PatchLimit`，每个文件的两边都算），超出之后的文件同样只列出名字，不给出 hunk。同一时间最多有四个 blame 计算和文件三方合并在跑（`repo.lineWorkers`），每个只在调用方还在等的时候排队；blame 计算是在派生过程内部排队的，所以挂断的调用方不会让同时在跑的计算变多。服务端同一时间也最多处理四个 blame 和 patch 请求（`server.heavyRequests`），因为每个请求在响应写完之前都占着它的结果；其余请求排队等待，客户端断开就不再等。blame 的响应和 patch 都是分段写出的，不会先整个编码好再发送。
 
 ## 4. 服务端写操作（`internal/repo/write.go`）
 

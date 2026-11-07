@@ -5,6 +5,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/garyships/kudzu/internal/auth"
 	"github.com/garyships/kudzu/internal/lru"
@@ -37,6 +39,7 @@ type Server struct {
 	start time.Time
 	views *lru.Cache[viewKey, viewEntry]
 	sizes *lru.Cache[object.ID, int64]
+	heavy chan struct{} // see heavySlot
 
 	counters proto.Counters
 	created  atomic.Int64
@@ -44,8 +47,25 @@ type Server struct {
 	retries  atomic.Int64
 }
 
+// heavyRequests is how many blame and patch requests run at once. At the
+// textdiff limits each can hold a hundred megabytes or more until its
+// response is written, so without a bound parallel requests would multiply
+// that.
+const heavyRequests = 4
+
 func New(r *repo.Repo, logger *log.Logger) *Server {
-	return &Server{Repo: r, Log: logger, start: time.Now(), views: lru.New[viewKey, viewEntry](100_000), sizes: lru.New[object.ID, int64](1_000_000)}
+	return &Server{Repo: r, Log: logger, start: time.Now(), views: lru.New[viewKey, viewEntry](100_000), sizes: lru.New[object.ID, int64](1_000_000), heavy: make(chan struct{}, heavyRequests)}
+}
+
+// heavySlot waits for one of the heavyRequests slots, or until the client
+// goes away.
+func (s *Server) heavySlot(ctx context.Context) (release func(), err error) {
+	select {
+	case s.heavy <- struct{}{}:
+		return func() { <-s.heavy }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -631,21 +651,50 @@ func (s *Server) handleBlame(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	release, err := s.heavySlot(ctx)
+	if err != nil {
+		return // the client has gone
+	}
+	defer release()
 	lines, err := s.Repo.Blame(ctx, head, path)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := make([]BlameLine, len(lines))
-	for i, l := range lines {
-		c, err := s.Repo.Changeset(ctx, l.Changeset)
-		if err != nil {
-			s.fail(w, err)
-			return
+	// Look up the changesets before writing anything, so that a failure is
+	// still an error status.
+	changesets := map[object.ID]*object.Changeset{}
+	for _, l := range lines {
+		if _, ok := changesets[l.Changeset]; !ok {
+			c, err := s.Repo.Changeset(ctx, l.Changeset)
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			changesets[l.Changeset] = c
 		}
-		out[i] = BlameLine{BlameLine: l, Author: c.Author, Time: c.Time}
 	}
-	writeJSON(w, http.StatusOK, out)
+	// Write the array a line at a time instead of building a second copy
+	// of the lines and buffering the whole response.
+	w.Header().Set("Content-Type", "application/json")
+	bw := bufio.NewWriterSize(w, 64<<10)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	bw.WriteByte('[')
+	for i, l := range lines {
+		if i > 0 {
+			bw.WriteByte(',')
+		}
+		c := changesets[l.Changeset]
+		buf.Reset()
+		enc.Encode(BlameLine{BlameLine: l, Author: c.Author, Time: c.Time})
+		if _, err := bw.Write(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))); err != nil {
+			return // the client has gone
+		}
+	}
+	bw.WriteString("]\n")
+	bw.Flush()
 }
 
 type DiffResponse struct {
@@ -709,13 +758,67 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	if resp.Files == nil {
 		resp.Files = []repo.FileDiff{}
 	}
-	if q.Get("patch") == "1" {
-		if resp.Patch, err = s.Repo.Patch(ctx, files); err != nil {
-			s.fail(w, err)
-			return
-		}
+	if q.Get("patch") != "1" {
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	release, err := s.heavySlot(ctx)
+	if err != nil {
+		return // the client has gone
+	}
+	defer release()
+	patch, err := s.Repo.Patch(ctx, files)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	// The patch is the last field, written a piece at a time.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.Encode(resp)
+	w.Header().Set("Content-Type", "application/json")
+	bw := bufio.NewWriterSize(w, 64<<10)
+	if patch == "" {
+		bw.Write(buf.Bytes())
+	} else {
+		bw.Write(bytes.TrimSuffix(buf.Bytes(), []byte("}\n")))
+		bw.WriteString(`,"patch":`)
+		writeJSONString(bw, patch)
+		bw.WriteString("}\n")
+	}
+	bw.Flush()
+}
+
+// writeJSONString writes s as a JSON string a piece at a time: escaped all
+// at once, a patch full of control characters takes six times its size.
+func writeJSONString(w io.Writer, s string) error {
+	const piece = 32 << 10
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	io.WriteString(w, `"`)
+	for len(s) > 0 {
+		n := len(s)
+		if n > piece {
+			// Cut where a rune starts, never inside a UTF-8 sequence.
+			n = piece
+			for k := n; k > n-utf8.UTFMax; k-- {
+				if utf8.RuneStart(s[k]) {
+					n = k
+					break
+				}
+			}
+		}
+		buf.Reset()
+		enc.Encode(s[:n])
+		if _, err := w.Write(buf.Bytes()[1 : buf.Len()-2]); err != nil {
+			return err
+		}
+		s = s[n:]
+	}
+	_, err := io.WriteString(w, `"`)
+	return err
 }
 
 func (s *Server) handleCat(w http.ResponseWriter, r *http.Request) {
