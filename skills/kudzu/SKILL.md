@@ -11,7 +11,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 
 - **No clone of history.** `.kudzu/` holds no history. `log`, `blame`, `diff`, `show`, `cat` and `ls` are server queries, so they work from any directory as long as a remote is set. No checkout needed.
 - **No push.** `kudzu commit` creates the changeset on the server right away. It exists there whether or not it lands.
-- **Land, not merge.** `--land main` (or `kudzu land`) asks the server to rebase your changeset onto main's current tip and move main with compare-and-swap. No merge queue, no lock. Concurrent lands that touch different files, or separate parts of a file, all succeed. Edits to the same or adjacent lines fail with a **conflict that lists the paths**.
+- **Land, not merge.** `--land main` (or `kudzu land`) asks the server to rebase your changeset onto main's current tip and move main with compare-and-swap. No merge queue, no lock. Concurrent lands that touch different files, or separate parts of a file, all succeed. Edits to the same or adjacent lines fail with a **conflict that lists the paths**, and so do edits on both sides to a file over 8 MiB or 200,000 lines, which is never merged by lines.
 - **No local branches.** A changeset is addressed by its ID. Refs like `main` are names on the server.
 - **Revisions:** a ref (`main`), a changeset ID or a unique hex prefix (4+ chars), plus git-style suffixes: `~N` for the Nth first-parent ancestor (`main~3`) and `^N` for the Nth parent (`main^2` is a merge's second parent), chained left to right (`main~2^2~1`). Inside a working copy, `-r` defaults to the checked-out changeset. Elsewhere it defaults to `main`.
 - **Remote:** `--remote ADDR` > `$KUDZU_REMOTE` > the working copy's recorded remote. ADDR is `host:port`, `http(s)://host:port` or `unix:///path.sock` (a node daemon).
@@ -28,7 +28,7 @@ No server to talk to? `kudzu up` inside any git repository imports its history a
 | Task | Command |
 |---|---|
 | History of the repo / of a path | `kudzu log [-r REV] [-n 20] [--oneline] [PATH]` |
-| Who changed each line | `kudzu blame [-r REV] PATH` |
+| Who changed each line | `kudzu blame [-r REV] PATH` (text files up to 8 MiB and 200,000 lines) |
 | What a changeset changed | `kudzu show [REV]` · `kudzu diff --to REV` |
 | Diff two revisions | `kudzu diff --from A --to B [--stat] [PATH]` |
 | What a branch adds since it forked | `kudzu diff --merge-base --from main --to X` |

@@ -3,7 +3,9 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
@@ -89,41 +91,64 @@ func (r *Repo) Blame(ctx context.Context, head object.ID, path string) ([]BlameL
 	if bv.Binary {
 		return nil, fmt.Errorf("%w: %s is not a text file", ErrInvalid, path)
 	}
+	tooLarge := func() error {
+		return fmt.Errorf("%w: %s is too large to blame (over %d bytes or %d lines)", ErrInvalid, path, textdiff.MaxBytes, textdiff.MaxLines)
+	}
+	if bv.TooLarge {
+		return nil, tooLarge()
+	}
 	u, err := r.ReadUnode(ctx, e.ID)
 	if err != nil {
 		return nil, err
 	}
-	content, err := r.ReadBlob(ctx, u.Content)
+	content, err := r.readText(ctx, u.Content)
+	if errors.Is(err, errTooLarge) {
+		return nil, tooLarge()
+	}
 	if err != nil {
 		return nil, err
 	}
-	attr := bv.expand()
 	lines := textdiff.SplitLines(content)
-	out := make([]BlameLine, len(lines))
-	for i, l := range lines {
-		out[i] = BlameLine{Line: i + 1, Changeset: attr[i], Text: l}
+	out := make([]BlameLine, 0, len(lines))
+	// Walk the runs rather than expand them into one ID per line.
+	for _, run := range bv.Runs {
+		for k := 0; k < run[0] && len(out) < len(lines); k++ {
+			out = append(out, BlameLine{Line: len(out) + 1, Changeset: bv.Changesets[run[1]], Text: lines[len(out)]})
+		}
+	}
+	if len(out) != len(lines) {
+		return nil, fmt.Errorf("blame of %s does not match its content", path)
 	}
 	return out, nil
 }
 
 // ReadFile returns the entry and content of a file at a changeset.
 func (r *Repo) ReadFile(ctx context.Context, cs object.ID, path string) (object.Entry, []byte, error) {
-	tree, err := r.TreeOf(ctx, cs)
+	e, err := r.FileEntry(ctx, cs, path)
 	if err != nil {
-		return object.Entry{}, nil, err
-	}
-	e, ok, err := r.LookupPath(ctx, tree, path)
-	if err != nil {
-		return object.Entry{}, nil, err
-	}
-	if !ok {
-		return object.Entry{}, nil, fmt.Errorf("%s: %w at %s", path, store.ErrNotFound, cs.Short())
-	}
-	if e.IsDir() {
-		return e, nil, fmt.Errorf("%w: %s is a directory", ErrInvalid, path)
+		return e, nil, err
 	}
 	b, err := r.ReadBlob(ctx, e.ID)
 	return e, b, err
+}
+
+// FileEntry returns the entry of a file at a changeset.
+func (r *Repo) FileEntry(ctx context.Context, cs object.ID, path string) (object.Entry, error) {
+	tree, err := r.TreeOf(ctx, cs)
+	if err != nil {
+		return object.Entry{}, err
+	}
+	e, ok, err := r.LookupPath(ctx, tree, path)
+	if err != nil {
+		return object.Entry{}, err
+	}
+	if !ok {
+		return object.Entry{}, fmt.Errorf("%s: %w at %s", path, store.ErrNotFound, cs.Short())
+	}
+	if e.IsDir() {
+		return e, fmt.Errorf("%w: %s is a directory", ErrInvalid, path)
+	}
+	return e, nil
 }
 
 // ListDir returns the entries of a directory at a changeset.
@@ -196,33 +221,60 @@ func (r *Repo) Diff(ctx context.Context, from, to object.ID, path string) ([]Fil
 	return out, err
 }
 
-// Patch renders a unified diff for the given file diffs.
+// PatchLimit bounds the content one Patch reads, counting both sides of
+// every file, in multiples of the textdiff limits: four times (32 MiB or
+// 800,000 lines) keeps a patch of many large files within a couple of
+// hundred megabytes of heap and a few seconds of CPU. Files past it are
+// named without hunks. A variable so that tests can lower it.
+var PatchLimit = 4
+
+// Patch renders a unified diff for the given file diffs. Files too large to
+// diff by lines, and the files after the content diffed reaches PatchLimit,
+// are named without hunks.
 func (r *Repo) Patch(ctx context.Context, diffs []FileDiff) (string, error) {
-	var out []byte
+	var out strings.Builder
+	bytesLeft, linesLeft := PatchLimit*textdiff.MaxBytes, PatchLimit*textdiff.MaxLines
 	for _, d := range diffs {
 		var a, b []byte
 		var err error
 		aName, bName := "a/"+d.Path, "b/"+d.Path
-		if d.Old != nil {
-			if a, err = r.ReadBlob(ctx, d.Old.ID); err != nil {
-				return "", err
-			}
-		} else {
+		if d.Old == nil {
 			aName = "/dev/null"
 		}
-		if d.New != nil {
-			if b, err = r.ReadBlob(ctx, d.New.ID); err != nil {
-				return "", err
-			}
-		} else {
+		if d.New == nil {
 			bName = "/dev/null"
 		}
-		header := fmt.Sprintf("diff --kudzu a/%s b/%s\n", d.Path, d.Path)
+		fmt.Fprintf(&out, "diff --kudzu a/%s b/%s\n", d.Path, d.Path)
 		if d.Old != nil && d.New != nil && d.Old.Mode != d.New.Mode {
-			header += fmt.Sprintf("old mode %o\nnew mode %o\n", d.Old.Mode, d.New.Mode)
+			fmt.Fprintf(&out, "old mode %o\nnew mode %o\n", d.Old.Mode, d.New.Mode)
+			if d.Old.ID == d.New.ID {
+				continue
+			}
 		}
-		out = append(out, header...)
-		out = append(out, textdiff.Unified(aName, bName, a, b, 3)...)
+		if bytesLeft >= 0 && linesLeft >= 0 {
+			if d.Old != nil {
+				a, err = r.readText(ctx, d.Old.ID)
+			}
+			if d.New != nil && err == nil {
+				b, err = r.readText(ctx, d.New.ID)
+			}
+			if errors.Is(err, errTooLarge) {
+				// Finding that took inflating up to the limit.
+				bytesLeft -= textdiff.MaxBytes
+				out.WriteString(textdiff.TooLargeNote(aName, bName))
+				continue
+			}
+			if err != nil {
+				return "", err
+			}
+			bytesLeft -= len(a) + len(b)
+			linesLeft -= textdiff.CountLines(a) + textdiff.CountLines(b)
+		}
+		if bytesLeft < 0 || linesLeft < 0 {
+			fmt.Fprintf(&out, "Files %s and %s differ (patch too large; diff this path on its own)\n", aName, bName)
+			continue
+		}
+		out.WriteString(textdiff.Unified(aName, bName, a, b, 3))
 	}
-	return string(out), nil
+	return out.String(), nil
 }

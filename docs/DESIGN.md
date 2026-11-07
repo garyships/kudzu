@@ -86,7 +86,7 @@ type Deriver struct {
 }
 ```
 
-`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key. A shared computation runs detached from the caller that started it, so one caller hanging up (say, during a large blame) doesn't fail the others waiting for the same value, and a panic in `Compute` becomes every waiter's error instead of leaving the key stuck.
+`Repo.Derive` does the rest. It checks caches, then computes missing ancestors oldest-first. It walks iteratively, so long histories don't overflow the stack. It writes results to `derived` and collapses concurrent computations of the same key. A shared computation runs detached from the caller that started it, so one caller hanging up (say, during a large blame) doesn't fail the others waiting for the same value, and a panic in `Compute` becomes every waiter's error instead of leaving the key stuck. Once every caller has given up, the computation stops before its next step (the values it already stored stay), so asking and hanging up cannot leave work running that nobody waits for.
 
 | Name | Key | Value | Used for | Default |
 |---|---|---|---|---|
@@ -105,10 +105,12 @@ The post's three benefits hold:
 
 **Blame** uses the file unode's previous version as its parent. Unchanged lines keep their attribution; new or changed lines go to the current linknode. Diffs use Myers' algorithm (`internal/textdiff`).
 
+Line-based work costs many times a file's size in memory when its lines are short, and Myers' time grows with the number of lines. So content over 8 MiB or 200,000 lines (`textdiff.MaxBytes`, `textdiff.MaxLines`) is never diffed or merged by lines, like a binary file: a patch shows `Files a/P and b/P differ (too large to diff by lines)` instead of hunks, and a three-way merge of it is a conflict. Blame refuses it (400); its blame value records that without the blob being read whole or split into lines, and a later version under the limits is blamed as if new. Blobs are read for this work with the byte limit as the decompression limit, so a small stored blob that inflates to a gigabyte costs no more than 8 MiB. One patch reads at most four times the limits in all (`repo.PatchLimit`), counting both sides of each file; the files after that are named without hunks too. At most four blame computations and three-way merges of files run at once (`repo.lineWorkers`), each waiting for its turn only as long as its caller does; a blame computation takes its turn inside the derivation, so callers that hang up cannot add to them. The server also answers at most four blame and patch requests at once (`server.heavyRequests`), since each holds its result until it is written; the others wait, and stop waiting when their client goes away. Blame responses and patches are written a piece at a time rather than encoded whole first.
+
 ## 4. Server-side writes (`internal/repo/write.go`)
 
 - **Create** validates paths and blobs, drops no-op changes, and applies the changes to the parent's tree. Only directories on the path to a changed file are rewritten, so the cost is about (changed files × depth). It then appends to the log and computes the eager derived types.
-- **threeWay** compares base and ours for each changed path. Paths untouched upstream apply as-is. Text files changed on both sides get a line-level three-way merge. Anything else is a conflict and returns the conflicting paths.
+- **threeWay** compares base and ours for each changed path. Paths untouched upstream apply as-is. Text files changed on both sides get a line-level three-way merge, if no version is too large for it. Anything else is a conflict and returns the conflicting paths.
 - **Rebase** moves the changesets in `merge-base(head, onto)..head` onto `onto`, one by one, on the server.
 - **Merge** creates a two-parent changeset whose changes are listed relative to ours.
 - **Land** is an optimistic loop with no global lock:
@@ -178,7 +180,7 @@ Every tier closes keep-alive connections that have been idle for two minutes, bu
 `kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` presents a revision as a read-only filesystem that downloads nothing up front, so a job pays only for what it reads:
 
 - A directory's tree object is fetched the first time the directory is listed or a path through it is looked up; a file's blob, the first time the file is read. Both go through the object protocol, normally to the node daemon, are verified like any other object, and are kept in a local cache (memory, or `--cache DIR`). Concurrent reads of the same object share one fetch.
-- Trees don't record file sizes, and `stat` must report them before a file is read. `GET /api/sizes?tree=ID` returns them for one directory in one request (the server reads the blobs it already has), so `ls -l` is exact without moving any file content.
+- Trees don't record file sizes, and `stat` must report them before a file is read. `GET /api/sizes?tree=ID` returns them for one directory in one request (the server counts the bytes of the blobs it already has as it inflates them, without holding their content, and remembers the sizes), so `ls -l` is exact without moving any file content.
 - A revision never changes, so the kernel may cache entries, attributes and pages indefinitely (`FOPEN_KEEP_CACHE`, long timeouts). Files take their changeset's time as mtime. Sparse cones and access-control filtering apply as in a checkout.
 - `internal/vfs` has no FUSE dependency and is tested on its own; `internal/fusefs` adapts it with [go-fuse](https://github.com/hanwen/go-fuse) and is only compiled with `-tags fuse`, so the default binary does not include it.
 

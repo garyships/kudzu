@@ -8,18 +8,56 @@ import (
 	"strings"
 )
 
+// Line-based work (blame, diffs, three-way merges) costs memory per line,
+// many times the size of the content when lines are short, and Myers' time
+// grows with the number of lines times the edit distance. Content over
+// either limit is too large for it: diffs only say that it differs, merges
+// conflict and blame refuses it. 8 MiB holds any hand-written source file;
+// 200,000 lines (about 40 bytes a line at 8 MiB) keeps one diff or blame to
+// about a hundred megabytes of heap, and a few seconds of CPU at worst.
+// They are variables so that tests can lower them.
+var (
+	MaxBytes = 8 << 20
+	MaxLines = 200_000
+)
+
+// TooLarge reports whether b is over MaxBytes or MaxLines.
+func TooLarge(b []byte) bool {
+	return len(b) > MaxBytes || CountLines(b) > MaxLines
+}
+
+// CountLines returns the number of lines in b, counting a last line without a
+// newline.
+func CountLines(b []byte) int {
+	n := bytes.Count(b, []byte{'\n'})
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		n++
+	}
+	return n
+}
+
+// TooLargeNote is what a diff says instead of hunks for content too large
+// to diff by lines.
+func TooLargeNote(aName, bName string) string {
+	return fmt.Sprintf("Files %s and %s differ (too large to diff by lines)\n", aName, bName)
+}
+
 // SplitLines splits b into lines, keeping each line's trailing newline so the
-// lines concatenate back to b exactly.
+// lines concatenate back to b exactly. The lines share a single copy of b.
 func SplitLines(b []byte) []string {
-	var out []string
-	for len(b) > 0 {
-		i := bytes.IndexByte(b, '\n')
+	if len(b) == 0 {
+		return nil
+	}
+	out := make([]string, 0, CountLines(b))
+	s := string(b)
+	for len(s) > 0 {
+		i := strings.IndexByte(s, '\n')
 		if i < 0 {
-			out = append(out, string(b))
+			out = append(out, s)
 			break
 		}
-		out = append(out, string(b[:i+1]))
-		b = b[i+1:]
+		out = append(out, s[:i+1])
+		s = s[i+1:]
 	}
 	return out
 }
@@ -157,13 +195,16 @@ func backtrack(trace [][]int32, n, m, dEnd int) []run {
 }
 
 // Merge3 performs a line-based three-way merge. ok is false when the two
-// sides changed overlapping or adjacent regions differently.
+// sides changed overlapping or adjacent regions differently, or when the
+// versions are too large to merge by lines.
 func Merge3(base, ours, theirs []byte) (merged []byte, ok bool) {
 	switch {
 	case bytes.Equal(ours, theirs), bytes.Equal(base, theirs):
 		return ours, true
 	case bytes.Equal(base, ours):
 		return theirs, true
+	case TooLarge(base), TooLarge(ours), TooLarge(theirs):
+		return nil, false
 	}
 	bl, ol, tl := SplitLines(base), SplitLines(ours), SplitLines(theirs)
 	in := interner{}
@@ -234,6 +275,9 @@ func sideRange(lines []string, hs []Hunk, gs, ge int) []string {
 func Unified(aName, bName string, a, b []byte, context int) string {
 	if bytes.Equal(a, b) {
 		return ""
+	}
+	if TooLarge(a) || TooLarge(b) {
+		return TooLargeNote(aName, bName)
 	}
 	if IsBinary(a) || IsBinary(b) {
 		return fmt.Sprintf("Binary files %s and %s differ\n", aName, bName)

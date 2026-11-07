@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/garyships/kudzu/internal/lru"
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/store"
+	"github.com/garyships/kudzu/internal/textdiff"
 )
 
 // ErrInvalid marks a request the caller must fix (bad path, unknown parent...).
@@ -33,12 +35,18 @@ type Repo struct {
 	unodes     *lru.Cache[object.ID, *object.Unode]
 	derived    *lru.Cache[derivedKey, []byte]
 	flights    flightGroup
+	lineWork   chan struct{} // see lineSlot
 }
 
 type derivedKey struct {
 	kind string
 	id   object.ID
 }
+
+// lineWorkers is how many blame computations and three-way merges of files
+// run at once. They are CPU-bound, and at the textdiff limits each can hold
+// tens of megabytes, so more at once would only multiply the memory.
+const lineWorkers = 4
 
 func New(meta store.Meta, objs store.Objects) *Repo {
 	return &Repo{
@@ -49,6 +57,19 @@ func New(meta store.Meta, objs store.Objects) *Repo {
 		trees:      lru.New[object.ID, *object.Tree](200_000),
 		unodes:     lru.New[object.ID, *object.Unode](200_000),
 		derived:    lru.New[derivedKey, []byte](500_000),
+		lineWork:   make(chan struct{}, lineWorkers),
+	}
+}
+
+// lineSlot waits for one of the lineWorkers slots, or until ctx is done.
+// Blame computations take one inside the derivation, not in the request
+// that asked, so a client that hangs up cannot leave more of them running.
+func (r *Repo) lineSlot(ctx context.Context) (release func(), err error) {
+	select {
+	case r.lineWork <- struct{}{}:
+		return func() { <-r.lineWork }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -72,6 +93,12 @@ func (r *Repo) Changeset(ctx context.Context, id object.ID) (*object.Changeset, 
 }
 
 func (r *Repo) readObject(ctx context.Context, id object.ID, want object.Kind) ([]byte, error) {
+	return r.readObjectLimit(ctx, id, want, object.MaxSize)
+}
+
+// readObjectLimit is readObject for content of at most limit bytes: larger
+// content is an error matching object.ErrTooLarge.
+func (r *Repo) readObjectLimit(ctx context.Context, id object.ID, want object.Kind, limit int) ([]byte, error) {
 	stored, err := r.Objs.Get(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("%s %s: %w", want, id.Short(), store.ErrNotFound)
@@ -79,7 +106,7 @@ func (r *Repo) readObject(ctx context.Context, id object.ID, want object.Kind) (
 	if err != nil {
 		return nil, err
 	}
-	kind, content, err := object.Decode(stored)
+	kind, content, err := object.DecodeLimit(stored, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +132,37 @@ func (r *Repo) writeObject(ctx context.Context, kind object.Kind, content []byte
 
 func (r *Repo) ReadBlob(ctx context.Context, id object.ID) ([]byte, error) {
 	return r.readObject(ctx, id, object.KindBlob)
+}
+
+// errTooLarge marks content too large for line-based work (textdiff.TooLarge).
+var errTooLarge = errors.New("too large to process by lines")
+
+// readText reads a blob for blame, a patch or a merge. Content over the
+// textdiff limits is errTooLarge, found without inflating more than
+// textdiff.MaxBytes of it: a small stored blob can inflate to a gigabyte.
+func (r *Repo) readText(ctx context.Context, id object.ID) ([]byte, error) {
+	b, err := r.readObjectLimit(ctx, id, object.KindBlob, textdiff.MaxBytes)
+	if errors.Is(err, object.ErrTooLarge) || err == nil && textdiff.TooLarge(b) {
+		return nil, errTooLarge
+	}
+	return b, err
+}
+
+// CopyBlob writes a blob's content to w and returns its size. It holds only
+// the blob's stored form (see object.WriteContent), so serving or measuring
+// a small stored blob that inflates to a gigabyte costs no memory for it.
+func (r *Repo) CopyBlob(ctx context.Context, id object.ID, w io.Writer) (int64, error) {
+	stored, err := r.Objs.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, fmt.Errorf("%s %s: %w", object.KindBlob, id.Short(), store.ErrNotFound)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(stored) > 0 && object.Kind(stored[0]) != object.KindBlob {
+		return 0, fmt.Errorf("object %s is a %s, not a %s", id.Short(), object.Kind(stored[0]), object.KindBlob)
+	}
+	return object.WriteContent(w, stored)
 }
 
 func (r *Repo) WriteBlob(ctx context.Context, content []byte) (object.ID, error) {

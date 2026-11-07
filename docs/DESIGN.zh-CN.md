@@ -86,7 +86,7 @@ type Deriver struct {
 }
 ```
 
-`Repo.Derive` 负责其余所有事情：查缓存、按需从最老的缺失祖先开始往前算（迭代实现，再长的历史也不会栈溢出）、把结果写回 `derived` 表、合并同一个 key 的并发计算。合并后的计算不受发起它的调用方取消的影响，所以一个调用方中途断开（比如一次很大的 blame 时客户端挂断）不会让等同一个值的其他调用方失败；`Compute` 里的 panic 会变成每个等待者收到的错误，而不是让这个 key 永远卡住。
+`Repo.Derive` 负责其余所有事情：查缓存、按需从最老的缺失祖先开始往前算（迭代实现，再长的历史也不会栈溢出）、把结果写回 `derived` 表、合并同一个 key 的并发计算。合并后的计算不受发起它的调用方取消的影响，所以一个调用方中途断开（比如一次很大的 blame 时客户端挂断）不会让等同一个值的其他调用方失败；`Compute` 里的 panic 会变成每个等待者收到的错误，而不是让这个 key 永远卡住。所有调用方都放弃之后，计算会在下一步之前停下（已经存下的值保留），所以请求之后马上挂断，不会留下没人等的计算一直在跑。
 
 现有四种：
 
@@ -106,10 +106,12 @@ type Deriver struct {
 
 **blame**：用文件 unode 的上一个版本当父节点。没变的行沿用上一版的归属，新增或修改的行归到当前 linknode。差异计算用 Myers diff（`internal/textdiff`）。
 
+按行处理的开销是逐行算的：行很短时，内存占用是文件大小的许多倍，Myers 的耗时也随行数增长。所以超过 8 MiB 或 200,000 行的内容（`textdiff.MaxBytes`、`textdiff.MaxLines`）和二进制文件一样，从不按行做 diff 或合并：patch 里只显示 `Files a/P and b/P differ (too large to diff by lines)`，不给出 hunk；对它做三方合并算冲突。blame 拒绝这样的文件（400）；它的 blame 值只记下这一点，不需要把 blob 整个读出来或拆成行；之后回到上限以内的版本，按新文件算 blame。这些操作读取 blob 时把字节上限当作解压上限，所以一个存储形式很小、解压后有 1 GiB 的 blob，最多也只占 8 MiB。一个 patch 总共最多读取四倍上限的内容（`repo.PatchLimit`，每个文件的两边都算），超出之后的文件同样只列出名字，不给出 hunk。同一时间最多有四个 blame 计算和文件三方合并在跑（`repo.lineWorkers`），每个只在调用方还在等的时候排队；blame 计算是在派生过程内部排队的，所以挂断的调用方不会让同时在跑的计算变多。服务端同一时间也最多处理四个 blame 和 patch 请求（`server.heavyRequests`），因为每个请求在响应写完之前都占着它的结果；其余请求排队等待，客户端断开就不再等。blame 的响应和 patch 都是分段写出的，不会先整个编码好再发送。
+
 ## 4. 服务端写操作（`internal/repo/write.go`）
 
 - **Create**：校验路径和 blob，去掉无效改动，把改动应用到父节点的 tree 上（只重写改动路径上的目录，成本是"改动文件数 × 目录深度"），追加到日志，再计算需要立即计算的派生数据
-- **三方合并 `threeWay`**：对每个改动的路径，比较 base 和 ours。上游没动过的直接应用；两边都改了的文本文件做行级三方合并；其余情况算冲突，返回冲突路径
+- **三方合并 `threeWay`**：对每个改动的路径，比较 base 和 ours。上游没动过的直接应用；两边都改了的文本文件做行级三方合并（前提是没有哪个版本超出按行处理的上限）；其余情况算冲突，返回冲突路径
 - **Rebase**：在服务端把 `merge-base(head, onto)..head` 这一串 changeset 逐个移到 `onto` 上
 - **Merge**：生成一个双父节点的 changeset，改动相对 ours 列出
 - **Land**：没有全局锁的乐观循环：
@@ -178,7 +180,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 `kudzu mount [-r REV] [--sparse dirs] REMOTE MOUNTPOINT` 把一个版本挂载成只读文件系统，事先什么都不下载，任务只为它真正读到的内容付费：
 
 - 目录第一次被列出、或者第一次有路径经过它时，才取它的 tree 对象；文件第一次被读时，才取它的 blob。都通过对象协议（通常是节点 daemon）获取，像其他对象一样校验，并放进本地缓存（内存，或 `--cache DIR`）。同一对象的并发读取共用一次请求。
-- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端读取它本来就有的 blob），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
+- tree 里不记录文件大小，而 `stat` 在读文件之前就要报告大小。`GET /api/sizes?tree=ID` 一次返回一个目录里所有文件的大小（服务端在解压它本来就有的 blob 时边解压边计数，不把内容留在内存里，并缓存结果），所以 `ls -l` 的结果是准确的，又不传输任何文件内容。
 - 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
 - `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。
 

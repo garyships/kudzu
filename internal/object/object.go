@@ -151,6 +151,38 @@ func Decode(stored []byte) (Kind, []byte, error) {
 	return decode(stored, MaxSize)
 }
 
+// DecodeLimit is Decode for callers that only want content up to limit
+// bytes: larger content is an error matching ErrTooLarge, found without
+// inflating more than limit+1 bytes.
+func DecodeLimit(stored []byte, limit int) (Kind, []byte, error) {
+	return decode(stored, min(limit, MaxSize))
+}
+
+// WriteContent writes a stored object's content to w and returns its size.
+// A compressed payload is inflated a piece at a time rather than into
+// memory, so serving or measuring content that inflates to a gigabyte holds
+// only its stored form. Content larger than MaxSize is an error.
+func WriteContent(w io.Writer, stored []byte) (int64, error) {
+	if len(stored) < 2 {
+		return 0, errors.New("object too short")
+	}
+	switch stored[1] {
+	case codecRaw:
+		if len(stored)-2 > MaxSize {
+			return 0, tooLarge(MaxSize)
+		}
+		n, err := w.Write(stored[2:])
+		return int64(n), err
+	case codecZlib:
+		n, err := inflateTo(w, stored[2:], MaxSize+1)
+		if err == nil && n > MaxSize {
+			err = tooLarge(MaxSize)
+		}
+		return n, err
+	}
+	return 0, fmt.Errorf("unknown object codec %d", stored[1])
+}
+
 func decode(stored []byte, limit int) (Kind, []byte, error) {
 	if len(stored) < 2 {
 		return 0, nil, errors.New("object too short")
@@ -179,7 +211,12 @@ func (e tooLargeError) Error() string {
 	return fmt.Sprintf("object content is larger than %d bytes", int(e))
 }
 
+func (e tooLargeError) Is(target error) bool { return target == ErrTooLarge }
+
 func tooLarge(limit int) error { return tooLargeError(limit) }
+
+// ErrTooLarge matches the error for content over a decode limit.
+var ErrTooLarge = errors.New("object content too large")
 
 // An inflater is a zlib reader kept with the bytes.Reader it reads from.
 // Decode runs for every object a clone verifies and every blob blame, diff
