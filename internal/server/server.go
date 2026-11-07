@@ -278,6 +278,15 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, fmt.Errorf("%w: cannot upload %s objects", repo.ErrInvalid, kind))
 			return
 		}
+		// Keep the copy already stored, as writeObject does: an upload
+		// must not replace another client's object, even with bytes that
+		// check out.
+		if err := store.Touch(r.Context(), s.Repo.Objs, id); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			s.fail(w, err)
+			return
+		}
 		if err := s.Repo.Objs.Put(r.Context(), id, data); err != nil {
 			s.fail(w, err)
 			return
