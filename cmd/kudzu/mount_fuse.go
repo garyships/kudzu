@@ -90,12 +90,12 @@ func mountWritable(ctx context.Context, rem *proto.Remote, remote, mountpoint, o
 		if err != nil {
 			return err
 		}
-		base, err := os.UserCacheDir()
+		base, err := userCacheDir("--overlay")
 		if err != nil {
-			base = os.TempDir()
+			return err
 		}
 		sum := sha256.Sum256([]byte(abs))
-		overlay = filepath.Join(base, "kudzu", "mounts", filepath.Base(abs)+"-"+hex.EncodeToString(sum[:4]))
+		overlay = filepath.Join(base, "mounts", filepath.Base(abs)+"-"+hex.EncodeToString(sum[:4]))
 	}
 	o, err := vfs.OpenOverlay(ctx, overlay, rem, rev, sp, cache)
 	if err != nil {

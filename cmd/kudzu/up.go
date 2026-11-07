@@ -33,13 +33,13 @@ func defaultSocket() string {
 
 // upDataDir keeps one store per git repository, so re-running `kudzu up`
 // only imports new commits.
-func upDataDir(gitDir string) string {
-	base, err := os.UserCacheDir()
+func upDataDir(gitDir string) (string, error) {
+	base, err := userCacheDir("--dir")
 	if err != nil {
-		base = os.TempDir()
+		return "", err
 	}
 	sum := sha256.Sum256([]byte(gitDir))
-	return filepath.Join(base, "kudzu", "up", filepath.Base(gitDir)+"-"+hex.EncodeToString(sum[:4]))
+	return filepath.Join(base, "up", filepath.Base(gitDir)+"-"+hex.EncodeToString(sum[:4])), nil
 }
 
 // cmdUp is the one-command playground: import a git repository and run the
@@ -69,7 +69,9 @@ func cmdUp(ctx context.Context, args []string) error {
 		return fmt.Errorf("%s is not a git repository (run inside one, or pass --git PATH)", absGit)
 	}
 	if *dir == "" {
-		*dir = upDataDir(absGit)
+		if *dir, err = upDataDir(absGit); err != nil {
+			return err
+		}
 	}
 	// Refuse to steal the socket from a live `kudzu up` or daemon.
 	if c, err := net.Dial("unix", *sock); err == nil {

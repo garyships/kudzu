@@ -132,7 +132,7 @@ func TestDaemonPermissions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", "")
-	if dir := daemonDir(); !strings.HasPrefix(dir, home) {
+	if dir, _ := daemonDir(); !strings.HasPrefix(dir, home) {
 		t.Fatalf("default daemon directory %s is not under the user's home %s", dir, home)
 	}
 	sockDir, err := os.MkdirTemp("", "kz")
@@ -167,7 +167,9 @@ func TestDaemonPermissions(t *testing.T) {
 		} else if fi.Mode().Perm() != tc.want {
 			t.Errorf("daemon %v: socket mode %v, want %v", tc.args, fi.Mode().Perm(), tc.want)
 		}
-		if fi, err := os.Stat(daemonDir()); err != nil {
+		if dir, _ := daemonDir(); dir == "" {
+			t.Error("no default daemon directory")
+		} else if fi, err := os.Stat(dir); err != nil {
 			t.Error(err)
 		} else if fi.Mode().Perm() != 0o700 {
 			t.Errorf("daemon object directory mode %v, want %v", fi.Mode().Perm(), os.FileMode(0o700))
@@ -251,5 +253,27 @@ func TestImportKeepsLandedWork(t *testing.T) {
 	run(t, cmdImport, "--store", storeDir, "--git", gitDir, "--force")
 	if got := mainRef(); got != tip {
 		t.Fatalf("import --force left main at %s, want the git tip %s", got.Short(), tip.Short())
+	}
+}
+
+// TestNoSharedDefaultDirs: without a user cache directory (no HOME, as for
+// some system services), the commands that keep data in a default directory
+// refuse to start rather than fall back to a fixed path in the shared temp
+// directory, which another user could have created first.
+func TestNoSharedDefaultDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the user cache directory does not come from HOME")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	if dir, err := daemonDir(); err == nil {
+		t.Fatalf("daemonDir() = %s with no HOME", dir)
+	}
+	if dir, err := upDataDir("/src/repo"); err == nil {
+		t.Fatalf("upDataDir() = %s with no HOME", dir)
+	}
+	err := cmdDaemon(t.Context(), []string{"--listen", "unix://" + filepath.Join(t.TempDir(), "d.sock"), "--upstream", "127.0.0.1:1"})
+	if err == nil || !strings.Contains(err.Error(), "--dir") {
+		t.Fatalf("daemon with no HOME and no --dir: %v", err)
 	}
 }

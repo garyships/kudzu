@@ -333,14 +333,24 @@ func cmdCache(ctx context.Context, args []string) error {
 	return runTier(ctx, "cache", *addr, *sockMode, *upstream, store.NewMem(memBytes), *conc, "")
 }
 
-// daemonDir is the node daemon's default object directory. It is per user,
-// like the socket, rather than a fixed path in the shared temp directory.
-func daemonDir() string {
+// userCacheDir is where kudzu's default directories go: the user's own
+// cache directory. Without one (no HOME or XDG_CACHE_HOME, as for some
+// system services) there is no safe default, since a fixed path in the
+// shared temp directory could be created first, and then read or filled,
+// by another user. The error names the flag that sets the path instead.
+func userCacheDir(flagName string) (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
-		base = os.TempDir()
+		return "", fmt.Errorf("no default directory (%v); pass %s", err, flagName)
 	}
-	return filepath.Join(base, "kudzu", "daemon")
+	return filepath.Join(base, "kudzu"), nil
+}
+
+// daemonDir is the node daemon's default object directory. It is per user,
+// like the socket, rather than a fixed path in the shared temp directory.
+func daemonDir() (string, error) {
+	base, err := userCacheDir("--dir")
+	return filepath.Join(base, "daemon"), err
 }
 
 func cmdDaemon(ctx context.Context, args []string) error {
@@ -348,7 +358,11 @@ func cmdDaemon(ctx context.Context, args []string) error {
 	addr := fs.String("listen", "unix:///tmp/kudzu.sock", "listen address (unix:///path or host:port)")
 	sockMode := addSocketModeFlag(fs)
 	upstream := fs.String("upstream", "127.0.0.1:7071", "upstream tier (normally the regional cache)")
-	dir := fs.String("dir", daemonDir(), "object directory shared by all jobs on this node (created owner-only)")
+	defaultDir, dirErr := daemonDir()
+	if dirErr != nil {
+		defaultDir = ""
+	}
+	dir := fs.String("dir", defaultDir, "object directory shared by all jobs on this node (created owner-only)")
 	maxDisk := fs.String("max-disk", "10GB", "disk budget for cached objects")
 	conc := fs.Int("upstream-concurrency", 8, "max in-flight upstream requests")
 	seed := fs.String("seed", "", "snapshot file to load at startup (see 'kudzu snapshot')")
@@ -358,6 +372,9 @@ func cmdDaemon(ctx context.Context, args []string) error {
 	maxBytes, err := parseSize(*maxDisk)
 	if err != nil {
 		return err
+	}
+	if *dir == "" {
+		return dirErr
 	}
 	if err := os.MkdirAll(*dir, 0o700); err != nil {
 		return err
