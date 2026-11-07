@@ -114,7 +114,9 @@ func TestRefMovesCheckContent(t *testing.T) {
 
 	// A "merge" whose first parent is a root alice wrote and whose second is
 	// main changes nothing relative to its first parent, and landing it is a
-	// fast-forward, yet it would replace main's whole tree.
+	// fast-forward, yet it would replace main's whole tree. alice may not
+	// create it herself (TestNoForgedMergeParents), but may try to land one
+	// that someone who writes everything made.
 	blob := object.Hash(object.KindBlob, []byte("x\n"))
 	if err := g.alice.Upload(ctx, map[object.ID][]byte{blob: object.Encode(object.KindBlob, []byte("x\n"))}); err != nil {
 		t.Fatal(err)
@@ -126,9 +128,11 @@ func TestRefMovesCheckContent(t *testing.T) {
 	}, &root); err != nil {
 		t.Fatal(err)
 	}
-	err := g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
-		"parents": []object.ID{root.ID, g.main}, "author": "alice", "message": "merge", "land": "main",
-	}, nil)
+	merge, err := g.r.Create(ctx, repo.CreateRequest{Parents: []object.ID{root.ID, g.main}, Author: "alice", Message: "merge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = g.alice.PostJSON(ctx, "/api/land", map[string]string{"head": merge.ID.String(), "ref": "main"}, nil)
 	if status(err) != http.StatusForbidden || strings.Contains(err.Error(), "secrets") {
 		t.Fatalf("second-parent land: %v", err)
 	}
@@ -166,6 +170,50 @@ func TestRefMovesCheckContent(t *testing.T) {
 	// admin is not restricted at all.
 	if err := g.admin.PostJSON(ctx, "/api/refs/main", map[string]any{"old": secret, "new": start.String()}, nil); err != nil {
 		t.Fatalf("admin CAS: %v", err)
+	}
+}
+
+// TestNoForgedMergeParents: a principal whose writes are checked may not name
+// a second parent. A "merge" of someone's pending changeset that changes
+// nothing passes every path check, yet from then on that changeset counts as
+// landed: its owner's land would succeed without landing anything, and the
+// land of a stack on top of it would leave it out.
+func TestNoForgedMergeParents(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, aliceAPI)
+	start := g.main
+	x1 := g.commit(t, start, "rotate key", map[string]string{"secrets/key.txt": "rotated\n"})
+	x2 := g.commit(t, x1, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	for _, pending := range []object.ID{x1, x2} {
+		err := g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
+			"parents": []object.ID{start, pending}, "author": "alice", "message": "merge", "land": "main",
+		}, nil)
+		if status(err) != http.StatusForbidden {
+			t.Fatalf("merge naming %s: %v", pending.Short(), err)
+		}
+	}
+	var res repo.LandResult
+	if err := g.admin.PostJSON(ctx, "/api/land", map[string]string{"head": x2.String(), "ref": "main"}, &res); err != nil || res.Landed != x2 {
+		t.Fatalf("landing the stack: %+v %v", res, err)
+	}
+
+	// alice merges through /api/merge, which checks what the merge changes.
+	api := g.commit(t, start, "api", map[string]string{"services/api/main.go": "package main // api\n"})
+	var merged repo.Created
+	if err := g.alice.PostJSON(ctx, "/api/merge", map[string]any{"ours": "main", "theirs": api.String()}, &merged); err != nil {
+		t.Fatalf("alice's merge: %v", err)
+	}
+	// Whoever may write everything may still name parents, but not one twice.
+	if err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{
+		"parents": []object.ID{x2, api}, "author": "admin", "message": "merge",
+	}, nil); err != nil {
+		t.Fatalf("admin's merge: %v", err)
+	}
+	err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{
+		"parents": []object.ID{x2, x2}, "author": "admin", "message": "merge",
+	}, nil)
+	if status(err) != http.StatusBadRequest {
+		t.Fatalf("parent named twice: %v", err)
 	}
 }
 

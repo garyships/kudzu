@@ -404,6 +404,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := checkParents(auth.FromContext(ctx), req.Parents); err != nil {
+		s.fail(w, err)
+		return
+	}
 	if req.Land != "" {
 		if err := auth.FromContext(ctx).CheckLand(req.Land); err != nil {
 			s.fail(w, err)
@@ -431,6 +435,26 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		resp.Land = res
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// checkParents refuses a parent named twice, and a second parent from a
+// principal whose writes are checked. A merge claims its other parents'
+// changes, but only changes against the first parent are checked: naming
+// someone's pending changeset would make it count as landed without any of
+// its content. Such principals merge with /api/merge, which computes the
+// merged changes and so checks them.
+func checkParents(p *auth.Principal, parents []object.ID) error {
+	seen := make(map[object.ID]bool, len(parents))
+	for _, id := range parents {
+		if seen[id] {
+			return fmt.Errorf("%w: parent %s is named twice", repo.ErrInvalid, id.Short())
+		}
+		seen[id] = true
+	}
+	if len(parents) > 1 && !p.WritesAll("") {
+		return &auth.DeniedError{Principal: p.Name, Action: "merge"}
+	}
+	return nil
 }
 
 func (s *Server) noteLand(res *repo.LandResult) {
