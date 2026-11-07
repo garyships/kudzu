@@ -81,7 +81,7 @@ Read tools are annotated `readOnlyHint: true`. Write tools carry `destructiveHin
 
 **Results.** Each result is a JSON summary as text. `kudzu_cat`, `kudzu_blame` and `kudzu_diff` add the file content, the blame lines or the patch as a second text block, so it isn't JSON-escaped. Revisions in results are full 64-character changeset IDs.
 
-**Errors** are tool results with `isError: true`, never protocol errors. That covers bad arguments, unknown revisions or paths, an unreachable server and conflicts. A conflict names the conflicting paths and says what to do next, for example:
+**Errors** are tool results with `isError: true`, never protocol errors. That covers bad arguments, unknown revisions or paths, an unreachable server and conflicts. A failure inside the server reads `internal error (request ID)`; its details are in the server's log under that ID. A conflict names the conflicting paths and says what to do next, for example:
 
 ```
 conflict: created changeset 3f2a… but could not land it on main. Conflicting paths: services/api/handler.go.

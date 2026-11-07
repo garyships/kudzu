@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -318,6 +319,56 @@ func TestRequestBodies(t *testing.T) {
 		if rec := g.post(path, strings.NewReader(body)); rec.Code != http.StatusRequestEntityTooLarge {
 			t.Errorf("%s with a %d KiB body: status %d: %s", path, len(body)>>10, rec.Code, rec.Body)
 		}
+	}
+}
+
+// TestInternalErrorsStayInTheLog: a backend error can name an object's key,
+// which for a caller with restricted read access may be the real ID of a tree
+// it only gets filtered, and so a way to fetch what it may not read. Such
+// errors go to the log; the caller gets an ID that finds them there.
+func TestInternalErrorsStayInTheLog(t *testing.T) {
+	ctx := context.Background()
+	objs := &brokenObjects{Objects: store.NewMem(4 << 20)}
+	meta := storetest.Meta(t)
+	r := repo.New(meta, objs)
+	var changes []object.Change
+	for p, content := range map[string]string{"README.md": "hi\n", "secrets/key.txt": "hunter2\n"} {
+		id, _ := r.WriteBlob(ctx, []byte(content))
+		changes = append(changes, object.Change{Path: p, Mode: object.ModeFile, Blob: id})
+	}
+	c, err := r.Create(ctx, repo.CreateRequest{Author: "admin", Message: "init", Changes: changes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := meta.CASRef(ctx, "main", object.Zero, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	token, hash, _ := auth.NewToken()
+	policy, err := auth.Parse([]byte(fmt.Sprintf(`{"principals": {"alice": {"token_sha256": [%q], %s}}}`, hash, aliceAPI)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A server with cold caches, as after a restart, while the disk fails
+	// to read the root tree.
+	var logged strings.Builder
+	srv := New(repo.New(meta, objs), log.New(&logged, "", 0))
+	srv.Auth = policy
+	objs.broken = c.Tree
+
+	req := httptest.NewRequest("GET", "/api/resolve?rev=main", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	var resp struct{ Error string }
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	key := c.Tree.String()[2:]
+	id, ok := strings.CutPrefix(resp.Error, "internal error (request ")
+	if rec.Code != http.StatusInternalServerError || !ok || strings.Contains(rec.Body.String(), key) {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	id = strings.TrimSuffix(id, ")")
+	if !strings.Contains(logged.String(), "request "+id+"): read objects/") || !strings.Contains(logged.String(), key) {
+		t.Fatalf("log for request %s: %q", id, logged.String())
 	}
 }
 

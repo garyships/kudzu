@@ -6,6 +6,8 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -194,9 +196,21 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, errTooLarge):
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": err.Error()})
 	default:
-		s.Log.Printf("internal error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		// Backend errors can name object keys, and so the real ID of a tree
+		// the caller may only see filtered: they stay in the log, and the
+		// caller gets the request ID that finds them there.
+		id := requestID()
+		s.Log.Printf("internal error (request %s): %v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error (request " + id + ")"})
 	}
+}
+
+// requestID returns a short random ID that ties an error response to its
+// log line.
+func requestID() string {
+	var b [4]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (s *Server) resolve(ctx context.Context, rev string) (object.ID, error) {
