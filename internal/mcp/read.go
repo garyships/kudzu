@@ -41,12 +41,12 @@ func (k *kudzu) addReadTools(s *sdk.Server) {
 	}, k.logTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_blame",
-		Description: "Show which changeset last changed each line of a text file (first-parent blame), computed on the server. Returns a JSON summary followed by lines formatted as '<changeset> <author> <date> <line>) <text>'. Use start_line/end_line for large files.",
+		Description: "Show which changeset last changed each line of a text file (first-parent blame), computed on the server. Returns a JSON summary followed by lines formatted as '<changeset> <author> <date> <line>) <text>'. Use start_line/end_line for large files. Files over 8 MiB or 200,000 lines can't be blamed.",
 		Annotations: readOnly("Blame"),
 	}, k.blameTool)
 	addTool(s, &sdk.Tool{
 		Name:        "kudzu_diff",
-		Description: "Compare two revisions on the server. Returns the changed files (status A added, M modified, D deleted) and, unless patch is false, a unified diff after the JSON summary. With only 'to', shows what that changeset changed relative to its first parent. With merge_base, diffs from the common ancestor of from and to (what a branch adds). Files over 8 MiB or 200,000 lines are named in the patch without hunks. The patch is truncated to max_patch_bytes.",
+		Description: "Compare two revisions on the server. Returns the changed files (status A added, M modified, D deleted) and, unless patch is false, a unified diff after the JSON summary. With only 'to', shows what that changeset changed relative to its first parent. With merge_base, diffs from the common ancestor of from and to (what a branch adds). Files over 8 MiB or 200,000 lines, and files after the first 32 MiB of content, are named in the patch without hunks. The patch is truncated to max_patch_bytes.",
 		Annotations: readOnly("Diff"),
 	}, k.diffTool)
 	addTool(s, &sdk.Tool{

@@ -28,7 +28,7 @@ No server to talk to? `kudzu up` inside any git repository imports its history a
 | Task | Command |
 |---|---|
 | History of the repo / of a path | `kudzu log [-r REV] [-n 20] [--oneline] [PATH]` |
-| Who changed each line | `kudzu blame [-r REV] PATH` |
+| Who changed each line | `kudzu blame [-r REV] PATH` (text files up to 8 MiB and 200,000 lines) |
 | What a changeset changed | `kudzu show [REV]` · `kudzu diff --to REV` |
 | Diff two revisions | `kudzu diff --from A --to B [--stat] [PATH]` |
 | What a branch adds since it forked | `kudzu diff --merge-base --from main --to X` |

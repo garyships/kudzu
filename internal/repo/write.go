@@ -310,9 +310,19 @@ func (r *Repo) threeWay(ctx context.Context, baseTree, oursTree object.ID, chang
 }
 
 func (r *Repo) mergeBlobs(ctx context.Context, base, ours, theirs object.ID) (object.ID, bool, error) {
+	// Cases that need no merging by lines, whatever the size.
+	switch {
+	case ours == theirs, base == theirs:
+		return ours, true, nil
+	case base == ours:
+		return theirs, true, nil
+	}
 	var bufs [3][]byte
 	for i, id := range []object.ID{base, ours, theirs} {
-		b, err := r.ReadBlob(ctx, id)
+		b, err := r.readText(ctx, id)
+		if errors.Is(err, errTooLarge) {
+			return object.Zero, false, nil
+		}
 		if err != nil {
 			return object.Zero, false, err
 		}

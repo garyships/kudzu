@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
+	"errors"
 	"hash/adler32"
 	"runtime"
 	"strings"
@@ -61,11 +62,11 @@ func TestSizeLimit(t *testing.T) {
 		id := Hash(KindBlob, content)
 		raw := append([]byte{byte(KindBlob), codecRaw}, content...)
 		for _, stored := range [][]byte{Encode(KindBlob, content), raw} {
-			_, got, err := decode(stored, limit)
+			_, got, err := DecodeLimit(stored, limit)
 			_, _, verr := verify(id, stored, limit)
 			_, cerr := check(id, stored, limit)
 			if n > limit {
-				if err == nil || verr == nil || cerr == nil {
+				if !errors.Is(err, ErrTooLarge) || verr == nil || cerr == nil {
 					t.Fatalf("%d bytes, codec %d: accepted past a %d-byte limit: %v %v %v", n, stored[1], limit, err, verr, cerr)
 				}
 				continue

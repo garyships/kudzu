@@ -105,7 +105,7 @@ The post's three benefits hold:
 
 **Blame** uses the file unode's previous version as its parent. Unchanged lines keep their attribution; new or changed lines go to the current linknode. Diffs use Myers' algorithm (`internal/textdiff`).
 
-Line-based work costs many times a file's size in memory when its lines are short, and Myers' time grows with the number of lines. So content over 8 MiB or 200,000 lines (`textdiff.MaxBytes`, `textdiff.MaxLines`) is never diffed or merged by lines, like a binary file: a patch shows `Files a/P and b/P differ (too large to diff by lines)` instead of hunks, and a three-way merge of it is a conflict.
+Line-based work costs many times a file's size in memory when its lines are short, and Myers' time grows with the number of lines. So content over 8 MiB or 200,000 lines (`textdiff.MaxBytes`, `textdiff.MaxLines`) is never diffed or merged by lines, like a binary file: a patch shows `Files a/P and b/P differ (too large to diff by lines)` instead of hunks, and a three-way merge of it is a conflict. Blame refuses it (400); its blame value records that without the blob being read whole or split into lines, and a later version under the limits is blamed as if new. Blobs are read for this work with the byte limit as the decompression limit, so a small stored blob that inflates to a gigabyte costs no more than 8 MiB. One patch reads at most four times the limits in all (`repo.PatchLimit`), counting both sides of each file; the files after that are named without hunks too.
 
 ## 4. Server-side writes (`internal/repo/write.go`)
 

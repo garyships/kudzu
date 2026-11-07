@@ -23,10 +23,12 @@ var (
 
 // TooLarge reports whether b is over MaxBytes or MaxLines.
 func TooLarge(b []byte) bool {
-	return len(b) > MaxBytes || countLines(b) > MaxLines
+	return len(b) > MaxBytes || CountLines(b) > MaxLines
 }
 
-func countLines(b []byte) int {
+// CountLines returns the number of lines in b, counting a last line without a
+// newline.
+func CountLines(b []byte) int {
 	n := bytes.Count(b, []byte{'\n'})
 	if len(b) > 0 && b[len(b)-1] != '\n' {
 		n++
@@ -46,7 +48,7 @@ func SplitLines(b []byte) []string {
 	if len(b) == 0 {
 		return nil
 	}
-	out := make([]string, 0, countLines(b))
+	out := make([]string, 0, CountLines(b))
 	s := string(b)
 	for len(s) > 0 {
 		i := strings.IndexByte(s, '\n')

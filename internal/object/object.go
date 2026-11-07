@@ -151,6 +151,13 @@ func Decode(stored []byte) (Kind, []byte, error) {
 	return decode(stored, MaxSize)
 }
 
+// DecodeLimit is Decode for callers that only want content up to limit
+// bytes: larger content is an error matching ErrTooLarge, found without
+// inflating more than limit+1 bytes.
+func DecodeLimit(stored []byte, limit int) (Kind, []byte, error) {
+	return decode(stored, min(limit, MaxSize))
+}
+
 func decode(stored []byte, limit int) (Kind, []byte, error) {
 	if len(stored) < 2 {
 		return 0, nil, errors.New("object too short")
@@ -179,7 +186,12 @@ func (e tooLargeError) Error() string {
 	return fmt.Sprintf("object content is larger than %d bytes", int(e))
 }
 
+func (e tooLargeError) Is(target error) bool { return target == ErrTooLarge }
+
 func tooLarge(limit int) error { return tooLargeError(limit) }
+
+// ErrTooLarge matches the error for content over a decode limit.
+var ErrTooLarge = errors.New("object content too large")
 
 // An inflater is a zlib reader kept with the bytes.Reader it reads from.
 // Decode runs for every object a clone verifies and every blob blame, diff

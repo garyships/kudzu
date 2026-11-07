@@ -255,11 +255,19 @@ var BlameDeriver = &Deriver{
 		if err != nil {
 			return nil, err
 		}
-		content, err := r.ReadBlob(ctx, u.Content)
+		if !object.IsRegular(u.Mode) {
+			return json.Marshal(blameValue{Binary: true})
+		}
+		content, err := r.readText(ctx, u.Content)
+		if errors.Is(err, errTooLarge) {
+			// Recorded without reading it all or splitting it into lines;
+			// Blame refuses it.
+			return json.Marshal(blameValue{TooLarge: true})
+		}
 		if err != nil {
 			return nil, err
 		}
-		if !object.IsRegular(u.Mode) || textdiff.IsBinary(content) {
+		if textdiff.IsBinary(content) {
 			return json.Marshal(blameValue{Binary: true})
 		}
 		lines := textdiff.SplitLines(content)
@@ -276,9 +284,12 @@ var BlameDeriver = &Deriver{
 			if err != nil {
 				return nil, err
 			}
-			if !pb.Binary {
-				prevContent, err := r.ReadBlob(ctx, pu.Content)
-				if err != nil {
+			// Lines of a previous version that is binary or too large count
+			// as new, like those of a new file. (One blamed before the limits
+			// were lowered reads as empty.)
+			if !pb.Binary && !pb.TooLarge {
+				prevContent, err := r.readText(ctx, pu.Content)
+				if err != nil && !errors.Is(err, errTooLarge) {
 					return nil, err
 				}
 				prevAttr := pb.expand()
@@ -304,6 +315,7 @@ var BlameDeriver = &Deriver{
 
 type blameValue struct {
 	Binary     bool        `json:"binary,omitempty"`
+	TooLarge   bool        `json:"too_large,omitempty"` // over the textdiff limits
 	Changesets []object.ID `json:"changesets,omitempty"`
 	Runs       [][2]int    `json:"runs,omitempty"` // [line count, changeset index]
 }
@@ -328,7 +340,11 @@ func compressBlame(attr []object.ID) blameValue {
 }
 
 func (v blameValue) expand() []object.ID {
-	var out []object.ID
+	n := 0
+	for _, run := range v.Runs {
+		n += run[0]
+	}
+	out := make([]object.ID, 0, n)
 	for _, run := range v.Runs {
 		for k := 0; k < run[0]; k++ {
 			out = append(out, v.Changesets[run[1]])
