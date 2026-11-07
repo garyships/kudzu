@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,10 @@ func OpenOverlay(ctx context.Context, dir string, remote *proto.Remote, rev stri
 	if err := os.MkdirAll(filepath.Join(dir, "upper"), 0o700); err != nil {
 		return nil, err
 	}
+	// Overlays made before there was a work directory staged new files in
+	// upper, and may have left some there.
+	_, err := os.Lstat(filepath.Join(dir, "work"))
+	oldLayout := errors.Is(err, fs.ErrNotExist)
 	if cache == nil {
 		cache = store.NewMem(256 << 20)
 	}
@@ -84,6 +89,11 @@ func OpenOverlay(ctx context.Context, dir string, remote *proto.Remote, rev stri
 		o.sparse = st.Sparse
 		if o.base, err = Open(ctx, remote, st.Changeset.String(), o.sparse, cache); err != nil {
 			return nil, err
+		}
+		if oldLayout {
+			if err := o.dropOldTemps(ctx); err != nil {
+				return nil, err
+			}
 		}
 		if rev != "" {
 			var res struct {
@@ -116,6 +126,13 @@ func OpenOverlay(ctx context.Context, dir string, remote *proto.Remote, rev stri
 	default:
 		return nil, err
 	}
+	// Whatever is in work was left by a crash: nothing refers to it.
+	if err := os.RemoveAll(o.workDir()); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(o.workDir(), 0o700); err != nil {
+		return nil, err
+	}
 	return o, o.save()
 }
 
@@ -123,6 +140,41 @@ func (o *Overlay) statePath() string { return filepath.Join(o.dir, "overlay.json
 
 func (o *Overlay) upper(p string) string {
 	return filepath.Join(o.dir, "upper", filepath.FromSlash(p))
+}
+
+// workDir is where new files are staged before they are renamed into upper,
+// as in overlayfs. It is on the same filesystem, so the rename is atomic.
+func (o *Overlay) workDir() string { return filepath.Join(o.dir, "work") }
+
+// dropOldTemps removes what a copy-up that crashed in an older version left
+// in upper: a file at <path>.kudzu-tmp holding the start of base file path,
+// which would otherwise show as a new file and be committed. Any other file
+// by such a name is the user's and stays. Callers are constructing o.
+func (o *Overlay) dropOldTemps(ctx context.Context) error {
+	root := filepath.Join(o.dir, "upper")
+	return filepath.WalkDir(root, func(full string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, full)
+		p, ok := strings.CutSuffix(filepath.ToSlash(rel), ".kudzu-tmp")
+		if !ok {
+			return nil
+		}
+		n, ok, err := o.inBase(ctx, p)
+		if err != nil || !ok || (n.Mode != object.ModeFile && n.Mode != object.ModeExec) {
+			return err
+		}
+		left, err := os.ReadFile(full)
+		if err != nil {
+			return err
+		}
+		data, err := o.base.ReadFile(ctx, n)
+		if err != nil || !bytes.HasPrefix(data, left) {
+			return err
+		}
+		return os.Remove(full)
+	})
 }
 
 // save writes the overlay state; callers hold o.mu (or are constructing o).
@@ -368,7 +420,7 @@ func (o *Overlay) copyUp(ctx context.Context, p string) (Entry, error) {
 			if e.Mode == object.ModeExec {
 				perm = 0o755
 			}
-			err = writeNew(o.upper(p), data, perm)
+			err = o.writeNew(p, data, perm)
 		}
 	}
 	if err != nil {
@@ -378,17 +430,29 @@ func (o *Overlay) copyUp(ctx context.Context, p string) (Entry, error) {
 	return e, nil
 }
 
-// writeNew writes a file through a temporary name, so a crash never leaves
-// a half-copied file in the overlay.
-func writeNew(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".kudzu-tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+// writeNew creates file p in upper. It is written in the work directory
+// first, under a fresh name opened with O_EXCL, then renamed into place: a
+// crash never leaves half a file in the overlay, and no name the user can
+// create in upper is written to or followed. Callers hold o.mu for writing.
+func (o *Overlay) writeNew(p string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(o.workDir(), "new-")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, perm); err != nil {
-		return err
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(perm) // exactly perm, whatever the umask
 	}
-	return os.Rename(tmp, path)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), o.upper(p))
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // OpenWrite opens p for writing, creating it (mode 0644, or 0755 with
@@ -431,7 +495,7 @@ func (o *Overlay) OpenWrite(ctx context.Context, p string, create, excl, trunc, 
 			if e.Mode == object.ModeExec {
 				perm = 0o755
 			}
-			if err := writeNew(o.upper(p), nil, perm); err != nil {
+			if err := o.writeNew(p, nil, perm); err != nil {
 				return nil, err
 			}
 		} else if _, err := o.copyUp(ctx, p); err != nil {
@@ -540,7 +604,7 @@ func (o *Overlay) Truncate(ctx context.Context, p string, size int64) error {
 		if err := o.parentDir(ctx, p); err != nil {
 			return err
 		}
-		return writeNew(o.upper(p), nil, perm)
+		return o.writeNew(p, nil, perm)
 	}
 	if _, err := o.copyUp(ctx, p); err != nil {
 		return err
@@ -735,9 +799,6 @@ func (o *Overlay) changes(ctx context.Context) ([]FileStatus, error) {
 		}
 		rel, _ := filepath.Rel(root, full)
 		p := filepath.ToSlash(rel)
-		if strings.HasSuffix(p, ".kudzu-tmp") {
-			return nil
-		}
 		info, err := d.Info()
 		if err != nil {
 			return err
