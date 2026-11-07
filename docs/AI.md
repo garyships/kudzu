@@ -70,12 +70,12 @@ This list is generated from the server's `tools/list`. `?` marks an optional arg
 | `kudzu_ancestry` | read | `a`, `b` | Merge base of two revisions, and whether either is an ancestor of the other (has X landed on main?). |
 | `kudzu_refs` | read | `prefix`? | Refs and the changesets they point at. |
 | `kudzu_stats` | read | none | Statistics of the connected tier: requests, hits, misses, upstream fetches, changesets created, lands. |
-| `kudzu_wc_status` | read | `dir`? | Local changes in a working copy on the MCP server's machine (M, D, ?), plus its changeset, remote and sparse directories. |
+| `kudzu_wc_status` | read | `dir`? | Local changes in a working copy on the MCP server's machine (M, D, ?), plus its changeset, remote and sparse directories. In a writable mount (`kudzu mount --writable`), the mount's changes (A, M, D). |
 | `kudzu_write` | write | `parent`, `message`, `files`?, `delete`?, `land`?, `author`? | Create a changeset from inline file contents (`files: [{path, content, executable?}]`) and deletions on top of `parent`, without a checkout. Uploads only blobs the server lacks. Optionally lands it on `land`. Rewritten files keep their executable bit unless `executable` is given. |
 | `kudzu_land` | write | `head`, `ref`? | Land an existing changeset onto a ref (default `main`): server-side rebase plus compare-and-swap, no lock. Landing again is a no-op (`already_landed`). |
 | `kudzu_rebase` | write | `head`, `onto`? | Rebase a changeset onto another revision on the server. Creates new changesets and moves no ref. |
-| `kudzu_wc_commit` | write | `message`, `dir`?, `add_untracked`?, `land`?, `author`? | Commit a working copy's local changes, optionally landing them in the same call. |
-| `kudzu_wc_update` | write, destructive | `dir`?, `rev`? | Move a working copy to another revision (default `main`). Refuses if tracked files are modified, or if untracked files are where the new revision has files. |
+| `kudzu_wc_commit` | write | `message`, `dir`?, `add_untracked`?, `land`?, `author`? | Commit a working copy's or a writable mount's local changes, optionally landing them in the same call. |
+| `kudzu_wc_update` | write, destructive | `dir`?, `rev`? | Move a working copy or a writable mount to another revision (default `main`). Refuses if tracked files are modified, or if untracked files are where the new revision has files. |
 
 Read tools are annotated `readOnlyHint: true`. Write tools carry `destructiveHint: false`, except `kudzu_wc_update`, which is `true`. All tools set `openWorldHint: false`. `--read-only` keeps the eleven read tools.
 

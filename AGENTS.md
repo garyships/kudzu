@@ -23,7 +23,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/client/` | The working copy: clone, status, commit, update, sparse, land, rebase, local diff. |
 | `internal/vfs/` | A lazily fetched view of one revision (the core of `kudzu mount`); `overlay.go` makes it writable overlayfs-style, and `control.go` is the mount's control socket that `kudzu status/diff/commit/update/land` use inside a writable mount. |
 | `internal/fusefs/` | FUSE adapter for `vfs` (go-fuse), read-only (`fusefs.go`) and writable (`rw.go`); built only with `-tags fuse`, like `cmd/kudzu/mount_fuse.go`. |
-| `internal/mcp/` | MCP server (`kudzu mcp`): tools backed by the HTTP API, plus a few working-copy tools. |
+| `internal/mcp/` | MCP server (`kudzu mcp`): tools backed by the HTTP API, plus a few working-copy tools that also act on writable mounts. |
 | `internal/sparse/` | Cone-mode sparse rules shared by client and server. |
 | `internal/textdiff/` | Myers diff, unified diff output, line-level three-way merge. |
 | `internal/gitimport/` | Incremental one-way import from git. |
