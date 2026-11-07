@@ -108,6 +108,9 @@ func (w *WC) Commit(ctx context.Context, message, author string, addUntracked bo
 			w.Index[ch.Path] = stats[ch.Path]
 		}
 	}
+	// Any tier in between could have forged resp.Tree, and the next update
+	// diffs from it. That is safe because apply only removes files the index
+	// tracks: ones this working copy checked out or committed itself.
 	w.State.Changeset, w.State.Tree = resp.ID, resp.Tree
 	if err := w.Save(); err != nil {
 		return nil, err
