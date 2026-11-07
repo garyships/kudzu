@@ -135,6 +135,39 @@ func TestFileDirTransitions(t *testing.T) {
 
 // TestReservedPaths: no changeset may add .git or .kudzu at any depth, but
 // one that a repository got before they were reserved can be deleted.
+// TestGitlinkMustHoldCommitID: a submodule's blob is a commit ID and
+// nothing else. kudzu export writes it into a git fast-import stream as is,
+// so a blob with more lines would inject commands into the mirror.
+func TestGitlinkMustHoldCommitID(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	c1 := commit(t, r, nil, "base", files{"README": "hi"})
+	sha1 := strings.Repeat("ab", 20)
+	for _, content := range []string{
+		sha1 + " vendor\nM 100644 inline INJECTED\ndata 2\nhi\nM 160000 " + sha1,
+		sha1 + "\n",
+		strings.ToUpper(sha1),
+		"not a commit",
+		"",
+	} {
+		blob, err := r.WriteBlob(ctx, []byte(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pin := []object.Change{{Path: "vendor", Mode: object.ModeGitlink, Blob: blob}}
+		if _, err := r.Create(ctx, CreateRequest{Parents: []object.ID{c1}, Changes: pin}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "commit ID") {
+			t.Errorf("submodule blob %q: %v", content, err)
+		}
+	}
+	for _, content := range []string{sha1, strings.Repeat("0f", 32)} {
+		blob, _ := r.WriteBlob(ctx, []byte(content))
+		pin := []object.Change{{Path: "vendor", Mode: object.ModeGitlink, Blob: blob}}
+		if _, err := r.Create(ctx, CreateRequest{Parents: []object.ID{c1}, Changes: pin}); err != nil {
+			t.Errorf("submodule pinned at %s: %v", content, err)
+		}
+	}
+}
+
 func TestReservedPaths(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()

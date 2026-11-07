@@ -192,7 +192,7 @@ Served by `kudzu server`. Cache and daemon tiers forward `/api/*`, `/objects/mis
 
 Errors: `{"error": "message"}` with status 400 (invalid request), 401 (missing or unknown token, when the server runs with `--auth`), 403 (`{"error": "permission denied: alice may not write docs/a.md", "path": "docs/a.md"}`; `path` is the denied path, or the ref for a land), 404 (unknown revision, path or object) or 500. Status 409 is a merge conflict, reported as `{"error": "conflict in a, b", "conflicts": ["a", "b"]}`, or a lost ref compare-and-swap (`{"error": "compare-and-swap conflict"}`).
 
-File modes are decimal in JSON: 33188 (0100644 file), 33261 (0100755 executable), 40960 (0120000 symlink), 57344 (0160000 submodule), 16384 (040000 directory, in tree entries). A change with mode 0 deletes the path.
+File modes are decimal in JSON: 33188 (0100644 file), 33261 (0100755 executable), 40960 (0120000 symlink), 57344 (0160000 submodule), 16384 (040000 directory, in tree entries). A change with mode 0 deletes the path. A submodule's blob holds exactly the pinned commit's git ID (40 or 64 lowercase hex digits); anything else is refused with a 400.
 
 ### Access control
 

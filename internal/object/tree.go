@@ -27,6 +27,21 @@ func ValidFileMode(m uint32) bool {
 	return false
 }
 
+// ValidGitlink reports whether content is what a gitlink (submodule) blob
+// holds: the git ID of the pinned commit, 40 (SHA-1) or 64 (SHA-256)
+// lowercase hex digits and nothing else.
+func ValidGitlink(content []byte) bool {
+	if len(content) != 40 && len(content) != 64 {
+		return false
+	}
+	for _, c := range content {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // IsRegular reports whether m is a regular (possibly executable) file.
 func IsRegular(m uint32) bool { return m == ModeFile || m == ModeExec }
 
