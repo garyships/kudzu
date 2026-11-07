@@ -426,6 +426,29 @@ func TestErrorsHideUnreadablePaths(t *testing.T) {
 	}
 }
 
+// TestPathErrorsHideUnreadablePaths: a change that does not fit the tree is
+// refused naming the path in the way, unless the caller may not read it.
+func TestPathErrorsHideUnreadablePaths(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, `"read": [""], "deny": ["secrets"], "write": ["services/api", "secrets/key.txt/sub"]`)
+	blob := object.Hash(object.KindBlob, []byte("x\n"))
+	if err := g.alice.Upload(ctx, map[object.ID][]byte{blob: object.Encode(object.KindBlob, []byte("x\n"))}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(path string) error {
+		return g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
+			"parents": []object.ID{g.main}, "author": "alice", "message": "m",
+			"changes": []object.Change{{Path: path, Mode: object.ModeFile, Blob: blob}},
+		}, nil)
+	}
+	if err := create("secrets/key.txt/sub/x"); status(err) != http.StatusBadRequest || strings.Contains(err.Error(), "secrets") {
+		t.Fatalf("below a hidden file: %v", err)
+	}
+	if err := create("services/api/main.go/x"); status(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "services/api/main.go: is a file") {
+		t.Fatalf("below a readable file: %v", err)
+	}
+}
+
 // TestWALSkipsHiddenEntries: a reader that may not see some changesets still
 // gets a position for each, so its cursor moves past them.
 func TestWALSkipsHiddenEntries(t *testing.T) {
@@ -471,7 +494,7 @@ func TestWALSkipsHiddenEntries(t *testing.T) {
 func TestRefNamesAreValidated(t *testing.T) {
 	ctx := context.Background()
 	g := newRig(t, aliceAPI)
-	for _, name := range []string{"rel^x", "a..b", "x~1", "a/.hidden", "b.lock", "with space"} {
+	for _, name := range []string{"rel^x", "a..b", "x~1", "a/.hidden", "b.lock", "with space", strings.Repeat("r", 256)} {
 		err := g.admin.PostJSON(ctx, "/api/refs/"+url.PathEscape(name), map[string]any{"new": "main"}, nil)
 		if status(err) != http.StatusBadRequest {
 			t.Errorf("creating ref %q: %v", name, err)
@@ -480,7 +503,7 @@ func TestRefNamesAreValidated(t *testing.T) {
 	if err := g.admin.PostJSON(ctx, "/api/land", map[string]string{"head": "main", "ref": "x:y"}, nil); status(err) != http.StatusBadRequest {
 		t.Errorf("landing on a new ref named x:y: %v", err)
 	}
-	for _, name := range []string{"users/alice/feature-1", "release-2.0"} {
+	for _, name := range []string{"users/alice/feature-1", "release-2.0", strings.Repeat("r", 255)} {
 		if err := g.admin.PostJSON(ctx, "/api/refs/"+name, map[string]any{"new": "main"}, nil); err != nil {
 			t.Errorf("creating ref %q: %v", name, err)
 		}

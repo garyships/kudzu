@@ -103,11 +103,19 @@ func writeCtx(ctx context.Context) context.Context {
 }
 
 // redact removes paths the caller may not read from a conflict error, so a
-// merge or rebase against someone else's changes cannot list them.
+// merge or rebase against someone else's changes cannot list them, and from
+// a create's path error, which can name a file above the changed path.
 func redact(ctx context.Context, err error) error {
 	p := auth.FromContext(ctx)
+	if p.ReadsAll("") {
+		return err
+	}
+	var pe *repo.PathError
+	if errors.As(err, &pe) && !p.CanRead(pe.Path) {
+		return fmt.Errorf("%w: a change does not fit the tree at a path you may not read", repo.ErrInvalid)
+	}
 	var ce *repo.ConflictError
-	if p.ReadsAll("") || !errors.As(err, &ce) {
+	if !errors.As(err, &ce) {
 		return err
 	}
 	out := &repo.ConflictError{Hidden: ce.Hidden}
@@ -500,7 +508,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.Repo.Create(ctx, req.CreateRequest)
 	if err != nil {
-		s.fail(w, err)
+		s.fail(w, redact(ctx, err))
 		return
 	}
 	s.created.Add(1)
