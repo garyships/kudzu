@@ -310,6 +310,130 @@ func TestOverlayResumeAndUpdate(t *testing.T) {
 	}
 }
 
+// changed lists the overlay's changes as "status path", joined by "|".
+func changed(t *testing.T, o *Overlay) string {
+	t.Helper()
+	changes, err := o.Changes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range changes {
+		got = append(got, c.Status+" "+c.Path)
+	}
+	return strings.Join(got, "|")
+}
+
+// Copy-ups used to be staged at <path>.kudzu-tmp in upper, so status, diff
+// and commit skipped a file of the user's by such a name, and commit then
+// deleted it.
+func TestOverlayKeepsTmpLookingNames(t *testing.T) {
+	ctx := context.Background()
+	r, rem := serveRepo(t)
+	o, err := OpenOverlay(ctx, t.TempDir(), rem, "main", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, o, "notes.kudzu-tmp", "precious\n", true, false)
+	if got := changed(t, o); got != "A notes.kudzu-tmp" {
+		t.Fatalf("changes = %s", got)
+	}
+	res, err := o.Commit(ctx, "notes", "agent", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, data, err := r.ReadFile(ctx, res.Base, "notes.kudzu-tmp"); err != nil || string(data) != "precious\n" {
+		t.Fatalf("committed notes.kudzu-tmp = %q, %v", data, err)
+	}
+}
+
+// Copying README.md up wrote README.md.kudzu-tmp with os.WriteFile and
+// os.Chmod, following a symlink there out of the overlay, then renamed the
+// symlink to README.md.
+func TestOverlayCopyUpIgnoresTmpSymlink(t *testing.T) {
+	ctx := context.Background()
+	_, rem := serveRepo(t)
+	dir := t.TempDir()
+	o, err := OpenOverlay(ctx, dir, rem, "main", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(outside, []byte("mine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Symlink(ctx, outside, "README.md.kudzu-tmp"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, o, "README.md", "more\n", false, false)
+	if b, _ := os.ReadFile(outside); string(b) != "mine\n" {
+		t.Fatalf("copy-up wrote through a symlink: %q", b)
+	}
+	if info, err := os.Stat(outside); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("copy-up changed a file outside the overlay: %v %v", info.Mode(), err)
+	}
+	if b, err := o.ReadFile(ctx, "README.md"); err != nil || string(b) != files["README.md"]+"more\n" {
+		t.Fatalf("README.md = %q, %v", b, err)
+	}
+	if e, err := o.Stat(ctx, "README.md.kudzu-tmp"); err != nil || e.Mode != object.ModeSymlink {
+		t.Fatalf("the symlink = %+v, %v", e, err)
+	}
+	if got := changed(t, o); got != "M README.md|A README.md.kudzu-tmp" {
+		t.Fatalf("changes = %s", got)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(dir, "work")); len(ents) != 0 {
+		t.Fatalf("the work directory holds %v", ents)
+	}
+}
+
+// An older version that crashed during a copy-up left <path>.kudzu-tmp in
+// upper, holding the start of the base file. Opened again, such an overlay
+// drops it rather than commit it; other files by such names are kept.
+func TestOverlayDropsOldTempFiles(t *testing.T) {
+	ctx := context.Background()
+	_, rem := serveRepo(t)
+	dir := t.TempDir()
+	if _, err := OpenOverlay(ctx, dir, rem, "main", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// What the older version left: no work directory, two copy-ups
+	// (one half-written) and two files of the user's.
+	if err := os.RemoveAll(filepath.Join(dir, "work")); err != nil {
+		t.Fatal(err)
+	}
+	upper := filepath.Join(dir, "upper")
+	for p, content := range map[string]string{
+		"README.md.kudzu-tmp":            files["README.md"][:3],
+		"services/api/main.go.kudzu-tmp": files["services/api/main.go"],
+		"tools/run.sh.kudzu-tmp":         "#!/bin/sh\necho mine\n",
+		"notes.kudzu-tmp":                "mine\n",
+	} {
+		full := filepath.Join(upper, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o, err := OpenOverlay(ctx, dir, rem, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := changed(t, o); got != "A notes.kudzu-tmp|A tools/run.sh.kudzu-tmp" {
+		t.Fatalf("changes = %s", got)
+	}
+	// Once the overlay has a work directory, nothing in upper is
+	// kudzu's: a copy the user makes by such a name stays.
+	write(t, o, "README.md.kudzu-tmp", files["README.md"], true, false)
+	if o, err = OpenOverlay(ctx, dir, rem, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := changed(t, o); got != "A README.md.kudzu-tmp|A notes.kudzu-tmp|A tools/run.sh.kudzu-tmp" {
+		t.Fatalf("changes after reopening = %s", got)
+	}
+}
+
 // TestFindMountTrustsOnlyOwnFiles: a mount.json someone else owns, say
 // planted in /tmp, must not redirect the kudzu command (and its token).
 func TestFindMountTrustsOnlyOwnFiles(t *testing.T) {
