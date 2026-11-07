@@ -122,6 +122,8 @@ jobs:
           sign=(--aws-sigv4 "aws:amz:us-east-1:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
           for i in $(seq 90); do curl -sf "${sign[@]}" -X PUT http://127.0.0.1:8333/kudzu-test && break; sleep 1; done
           curl -sSf "${sign[@]}" -o /dev/null "http://127.0.0.1:8333/kudzu-test?list-type=2"
-      - run: go test -race ./internal/store/... ./internal/repo/ ./internal/e2e/
+      # -count=1: Go's test cache cannot see Postgres or SeaweedFS, so a
+      # result cached by an earlier run proves nothing about this one.
+      - run: go test -race -count=1 ./internal/store/... ./internal/repo/ ./internal/e2e/
       - if: failure()
         run: cat "$RUNNER_TEMP/seaweedfs.log"; docker logs seaweedfs
