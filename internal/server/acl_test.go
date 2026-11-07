@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 // changeset with files in services/api, secrets and docs.
 type rig struct {
 	r     *repo.Repo
+	srv   *Server
 	alice *proto.Remote
 	admin *proto.Remote
 	main  object.ID
@@ -47,7 +49,7 @@ func newRig(t *testing.T, aliceRules string) *rig {
 	srv.Auth = policy
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
-	g := &rig{r: r}
+	g := &rig{r: r, srv: srv}
 	g.main = g.commit(t, object.Zero, "initial", map[string]string{
 		"README.md":            "# monorepo\n",
 		"services/api/main.go": "package main\n",
@@ -114,7 +116,9 @@ func TestRefMovesCheckContent(t *testing.T) {
 
 	// A "merge" whose first parent is a root alice wrote and whose second is
 	// main changes nothing relative to its first parent, and landing it is a
-	// fast-forward, yet it would replace main's whole tree.
+	// fast-forward, yet it would replace main's whole tree. alice may not
+	// create it herself (TestNoForgedMergeParents), but may try to land one
+	// that someone who writes everything made.
 	blob := object.Hash(object.KindBlob, []byte("x\n"))
 	if err := g.alice.Upload(ctx, map[object.ID][]byte{blob: object.Encode(object.KindBlob, []byte("x\n"))}); err != nil {
 		t.Fatal(err)
@@ -126,9 +130,11 @@ func TestRefMovesCheckContent(t *testing.T) {
 	}, &root); err != nil {
 		t.Fatal(err)
 	}
-	err := g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
-		"parents": []object.ID{root.ID, g.main}, "author": "alice", "message": "merge", "land": "main",
-	}, nil)
+	merge, err := g.r.Create(ctx, repo.CreateRequest{Parents: []object.ID{root.ID, g.main}, Author: "alice", Message: "merge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = g.alice.PostJSON(ctx, "/api/land", map[string]string{"head": merge.ID.String(), "ref": "main"}, nil)
 	if status(err) != http.StatusForbidden || strings.Contains(err.Error(), "secrets") {
 		t.Fatalf("second-parent land: %v", err)
 	}
@@ -166,6 +172,215 @@ func TestRefMovesCheckContent(t *testing.T) {
 	// admin is not restricted at all.
 	if err := g.admin.PostJSON(ctx, "/api/refs/main", map[string]any{"old": secret, "new": start.String()}, nil); err != nil {
 		t.Fatalf("admin CAS: %v", err)
+	}
+}
+
+// TestNoForgedMergeParents: a principal whose writes are checked may not name
+// a second parent. A "merge" of someone's pending changeset that changes
+// nothing passes every path check, yet from then on that changeset counts as
+// landed: its owner's land would succeed without landing anything, and the
+// land of a stack on top of it would leave it out.
+func TestNoForgedMergeParents(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, aliceAPI)
+	start := g.main
+	x1 := g.commit(t, start, "rotate key", map[string]string{"secrets/key.txt": "rotated\n"})
+	x2 := g.commit(t, x1, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	for _, pending := range []object.ID{x1, x2} {
+		err := g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
+			"parents": []object.ID{start, pending}, "author": "alice", "message": "merge", "land": "main",
+		}, nil)
+		if status(err) != http.StatusForbidden {
+			t.Fatalf("merge naming %s: %v", pending.Short(), err)
+		}
+	}
+	var res repo.LandResult
+	if err := g.admin.PostJSON(ctx, "/api/land", map[string]string{"head": x2.String(), "ref": "main"}, &res); err != nil || res.Landed != x2 {
+		t.Fatalf("landing the stack: %+v %v", res, err)
+	}
+
+	// alice merges through /api/merge, which checks what the merge changes.
+	api := g.commit(t, start, "api", map[string]string{"services/api/main.go": "package main // api\n"})
+	var merged repo.Created
+	if err := g.alice.PostJSON(ctx, "/api/merge", map[string]any{"ours": "main", "theirs": api.String()}, &merged); err != nil {
+		t.Fatalf("alice's merge: %v", err)
+	}
+	// Whoever may write everything may still name parents, but not one twice.
+	if err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{
+		"parents": []object.ID{x2, api}, "author": "admin", "message": "merge",
+	}, nil); err != nil {
+		t.Fatalf("admin's merge: %v", err)
+	}
+	err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{
+		"parents": []object.ID{x2, x2}, "author": "admin", "message": "merge",
+	}, nil)
+	if status(err) != http.StatusBadRequest {
+		t.Fatalf("parent named twice: %v", err)
+	}
+}
+
+// TestOnlyWritersCreate: a principal that may not write anywhere cannot
+// create, rebase or merge, although a changeset with no changes passes every
+// path check.
+func TestOnlyWritersCreate(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, `"read": ["docs"], "land": ["main"]`)
+	empty := g.commit(t, g.main, "empty", nil)
+	docs := g.commit(t, g.main, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	if err := g.r.Meta.CASRef(ctx, "main", g.main, docs); err != nil {
+		t.Fatal(err)
+	}
+	before, err := g.r.Meta.WAL(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]any{
+		"/api/changesets": map[string]any{"parents": []object.ID{docs}, "author": "Release Manager", "message": "release"},
+		"/api/rebase":     map[string]string{"head": empty.String(), "onto": "main"},
+		"/api/merge":      map[string]string{"ours": "main", "theirs": empty.String()},
+	} {
+		if err := g.alice.PostJSON(ctx, path, body, nil); status(err) != http.StatusForbidden {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+	if after, err := g.r.Meta.WAL(ctx, 0, 100); err != nil || len(after) != len(before) {
+		t.Fatalf("the log grew from %d to %d entries (%v)", len(before), len(after), err)
+	}
+}
+
+// TestCreateLimits: what a changeset from the API may hold is bounded.
+func TestCreateLimits(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, aliceAPI)
+	many := make([]object.ID, maxParents+1)
+	for i := range many {
+		many[i] = g.main
+	}
+	one := []object.ID{g.main}
+	for what, req := range map[string]map[string]any{
+		"parents":          {"parents": many, "author": "a", "message": "m"},
+		"bytes of message": {"parents": one, "author": "a", "message": strings.Repeat("m", maxMessage+1)},
+		"bytes of author":  {"parents": one, "author": strings.Repeat("a", maxAuthor+1), "message": "m"},
+		"bytes of extra":   {"parents": one, "author": "a", "message": "m", "extra": map[string]string{"k": strings.Repeat("v", maxExtra)}},
+	} {
+		err := g.admin.PostJSON(ctx, "/api/changesets", req, nil)
+		var he *proto.HTTPError
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest || !strings.Contains(he.Message, what+" (at most") {
+			t.Errorf("too many %s: %v", what, err)
+		}
+	}
+	if err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{"parents": one, "author": "a", "message": strings.Repeat("m", maxMessage)}, nil); err != nil {
+		t.Errorf("a message at the limit: %v", err)
+	}
+	other := g.commit(t, g.main, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	err := g.admin.PostJSON(ctx, "/api/merge", map[string]any{"ours": "main", "theirs": other.String(), "message": strings.Repeat("m", maxMessage+1)}, nil)
+	if status(err) != http.StatusBadRequest {
+		t.Errorf("a merge with too long a message: %v", err)
+	}
+}
+
+// watchedBody is a request body that records whether anything read it.
+type watchedBody struct{ read bool }
+
+func (b *watchedBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, io.EOF
+}
+
+// post sends a request straight to the server's handler as alice.
+func (g *rig) post(path string, body io.Reader) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, body)
+	req.Header.Set("Authorization", "Bearer "+g.alice.Token)
+	rec := httptest.NewRecorder()
+	g.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestRequestBodies: a caller that may not make a request is refused before
+// its body is read, and no endpoint reads more of a body than its requests
+// need, so large bodies cannot tie up the server's memory.
+func TestRequestBodies(t *testing.T) {
+	g := newRig(t, `"read": ["docs"], "land": ["users/alice/*"]`)
+	for _, path := range []string{"/api/changesets", "/api/rebase", "/api/merge", "/api/refs/main"} {
+		body := &watchedBody{}
+		if rec := g.post(path, body); rec.Code != http.StatusForbidden || body.read {
+			t.Errorf("%s: status %d, body read: %v", path, rec.Code, body.read)
+		}
+	}
+
+	g = newRig(t, `"read": [""], "write": ["services/api"], "land": ["main", "users/alice/*"]`)
+	rev := strings.Repeat("a", maxSmallBody)
+	for path, body := range map[string]string{
+		"/api/land":                 `{"head": "` + rev + `", "ref": "main"}`,
+		"/api/rebase":               `{"head": "` + rev + `", "onto": "main"}`,
+		"/api/refs/users/alice/new": `{"new": "` + rev + `"}`,
+		"/api/merge":                `{"ours": "main", "theirs": "main", "message": "` + strings.Repeat("m", maxMergeBody) + `"}`,
+	} {
+		if rec := g.post(path, strings.NewReader(body)); rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s with a %d KiB body: status %d: %s", path, len(body)>>10, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TestInternalErrorsStayInTheLog: a backend error can name an object's key,
+// which for a caller with restricted read access may be the real ID of a tree
+// it only gets filtered, and so a way to fetch what it may not read. Such
+// errors go to the log; the caller gets an ID that finds them there.
+func TestInternalErrorsStayInTheLog(t *testing.T) {
+	ctx := context.Background()
+	objs := &brokenObjects{Objects: store.NewMem(4 << 20)}
+	meta := storetest.Meta(t)
+	r := repo.New(meta, objs)
+	var changes []object.Change
+	for p, content := range map[string]string{"README.md": "hi\n", "secrets/key.txt": "hunter2\n"} {
+		id, _ := r.WriteBlob(ctx, []byte(content))
+		changes = append(changes, object.Change{Path: p, Mode: object.ModeFile, Blob: id})
+	}
+	c, err := r.Create(ctx, repo.CreateRequest{Author: "admin", Message: "init", Changes: changes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := meta.CASRef(ctx, "main", object.Zero, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	token, hash, _ := auth.NewToken()
+	policy, err := auth.Parse([]byte(fmt.Sprintf(`{"principals": {"alice": {"token_sha256": [%q], %s}}}`, hash, aliceAPI)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A server with cold caches, as after a restart, while the disk fails
+	// to read the root tree.
+	var logged strings.Builder
+	srv := New(repo.New(meta, objs), log.New(&logged, "", 0))
+	srv.Auth = policy
+	objs.broken = c.Tree
+
+	req := httptest.NewRequest("GET", "/api/resolve?rev=main", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	var resp struct{ Error string }
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	key := c.Tree.String()[2:]
+	id, ok := strings.CutPrefix(resp.Error, "internal error (request ")
+	if rec.Code != http.StatusInternalServerError || !ok || strings.Contains(rec.Body.String(), key) {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	id = strings.TrimSuffix(id, ")")
+	if !strings.Contains(logged.String(), "request "+id+"): read objects/") || !strings.Contains(logged.String(), key) {
+		t.Fatalf("log for request %s: %q", id, logged.String())
+	}
+}
+
+// TestContendedLandKeepsItsMessage: a land that gave up because the ref kept
+// moving is not an internal error. The caller can retry, so it gets 503 and
+// the reason rather than a request ID.
+func TestContendedLandKeepsItsMessage(t *testing.T) {
+	srv := New(nil, log.New(io.Discard, "", 0))
+	w := httptest.NewRecorder()
+	srv.fail(w, fmt.Errorf("could not land on main after 200 attempts: %w", repo.ErrContended))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "could not land on main") {
+		t.Fatalf("status %d, body %s", w.Code, w.Body)
 	}
 }
 
@@ -223,6 +438,29 @@ func TestErrorsHideUnreadablePaths(t *testing.T) {
 	}
 }
 
+// TestPathErrorsHideUnreadablePaths: a change that does not fit the tree is
+// refused naming the path in the way, unless the caller may not read it.
+func TestPathErrorsHideUnreadablePaths(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, `"read": [""], "deny": ["secrets"], "write": ["services/api", "secrets/key.txt/sub"]`)
+	blob := object.Hash(object.KindBlob, []byte("x\n"))
+	if err := g.alice.Upload(ctx, map[object.ID][]byte{blob: object.Encode(object.KindBlob, []byte("x\n"))}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(path string) error {
+		return g.alice.PostJSON(ctx, "/api/changesets", map[string]any{
+			"parents": []object.ID{g.main}, "author": "alice", "message": "m",
+			"changes": []object.Change{{Path: path, Mode: object.ModeFile, Blob: blob}},
+		}, nil)
+	}
+	if err := create("secrets/key.txt/sub/x"); status(err) != http.StatusBadRequest || strings.Contains(err.Error(), "secrets") {
+		t.Fatalf("below a hidden file: %v", err)
+	}
+	if err := create("services/api/main.go/x"); status(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "services/api/main.go: is a file") {
+		t.Fatalf("below a readable file: %v", err)
+	}
+}
+
 // TestWALSkipsHiddenEntries: a reader that may not see some changesets still
 // gets a position for each, so its cursor moves past them.
 func TestWALSkipsHiddenEntries(t *testing.T) {
@@ -268,7 +506,7 @@ func TestWALSkipsHiddenEntries(t *testing.T) {
 func TestRefNamesAreValidated(t *testing.T) {
 	ctx := context.Background()
 	g := newRig(t, aliceAPI)
-	for _, name := range []string{"rel^x", "a..b", "x~1", "a/.hidden", "b.lock", "with space"} {
+	for _, name := range []string{"rel^x", "a..b", "x~1", "a/.hidden", "b.lock", "with space", strings.Repeat("r", 256)} {
 		err := g.admin.PostJSON(ctx, "/api/refs/"+url.PathEscape(name), map[string]any{"new": "main"}, nil)
 		if status(err) != http.StatusBadRequest {
 			t.Errorf("creating ref %q: %v", name, err)
@@ -277,7 +515,7 @@ func TestRefNamesAreValidated(t *testing.T) {
 	if err := g.admin.PostJSON(ctx, "/api/land", map[string]string{"head": "main", "ref": "x:y"}, nil); status(err) != http.StatusBadRequest {
 		t.Errorf("landing on a new ref named x:y: %v", err)
 	}
-	for _, name := range []string{"users/alice/feature-1", "release-2.0"} {
+	for _, name := range []string{"users/alice/feature-1", "release-2.0", strings.Repeat("r", 255)} {
 		if err := g.admin.PostJSON(ctx, "/api/refs/"+name, map[string]any{"new": "main"}, nil); err != nil {
 			t.Errorf("creating ref %q: %v", name, err)
 		}

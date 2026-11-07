@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -128,7 +129,8 @@ func TestUploadKeepsStoredObject(t *testing.T) {
 	}
 }
 
-// brokenObjects fails to read one object, like a disk with a bad sector.
+// brokenObjects fails to read one object, like a disk with a bad sector, with
+// an error that names the object's file as the operating system's would.
 type brokenObjects struct {
 	store.Objects
 	broken object.ID
@@ -136,7 +138,8 @@ type brokenObjects struct {
 
 func (b *brokenObjects) Get(ctx context.Context, id object.ID) ([]byte, error) {
 	if id == b.broken {
-		return nil, errors.New("read error")
+		hex := id.String()
+		return nil, &fs.PathError{Op: "read", Path: "objects/" + hex[:2] + "/" + hex[2:], Err: errors.New("input/output error")}
 	}
 	return b.Objects.Get(ctx, id)
 }

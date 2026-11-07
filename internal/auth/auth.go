@@ -56,7 +56,7 @@ func (l Level) String() string {
 // reports it as 403, naming the path or ref.
 type DeniedError struct {
 	Principal string
-	Action    string // read, write, land or upload
+	Action    string // read, write, land, upload, create or merge
 	Path      string // a path, or a ref for land
 	Hidden    bool   // the path is one the principal may not read, so it is not named
 }
@@ -74,6 +74,10 @@ func (e *DeniedError) Error() string {
 		return fmt.Sprintf("permission denied: %s may not move ref %s", e.Principal, what)
 	case "upload":
 		return fmt.Sprintf("permission denied: %s may not upload objects (it may not write anywhere)", e.Principal)
+	case "create":
+		return fmt.Sprintf("permission denied: %s may not create changesets (it may not write anywhere)", e.Principal)
+	case "merge":
+		return fmt.Sprintf("permission denied: %s may not name more than one parent (merge with /api/merge instead)", e.Principal)
 	}
 	return fmt.Sprintf("permission denied: %s may not %s %s", e.Principal, e.Action, what)
 }

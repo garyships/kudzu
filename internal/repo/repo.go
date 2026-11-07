@@ -16,6 +16,10 @@ import (
 // ErrInvalid marks a request the caller must fix (bad path, unknown parent...).
 var ErrInvalid = errors.New("invalid request")
 
+// ErrContended marks a land that gave up because other lands kept moving
+// the ref; trying again later may succeed.
+var ErrContended = errors.New("the ref kept moving")
+
 type Repo struct {
 	Meta store.Meta
 	Objs store.Objects

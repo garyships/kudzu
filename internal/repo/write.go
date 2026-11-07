@@ -92,6 +92,9 @@ func (r *Repo) MoveRef(ctx context.Context, ref string, old, new object.ID) erro
 // ValidateRefName applies git's rules for ref names (git check-ref-format),
 // which also keeps them apart from revision syntax such as ~ and ^.
 func ValidateRefName(name string) error {
+	if len(name) > 255 {
+		return fmt.Errorf("%w: invalid ref name: longer than 255 bytes", ErrInvalid)
+	}
 	bad := func(why string) error { return fmt.Errorf("%w: invalid ref name %q: %s", ErrInvalid, name, why) }
 	switch {
 	case name == "" || name == "@":
@@ -515,5 +518,5 @@ func (r *Repo) Land(ctx context.Context, head object.ID, ref string) (*LandResul
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("could not land on %s after %d attempts", ref, maxAttempts)
+	return nil, fmt.Errorf("could not land on %s after %d attempts: %w", ref, maxAttempts, ErrContended)
 }

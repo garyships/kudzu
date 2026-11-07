@@ -17,7 +17,7 @@ Kudzu keeps history on the server. A working copy holds the files of one revisio
 - **Remote:** `--remote ADDR` > `$KUDZU_REMOTE` > the working copy's recorded remote. ADDR is `host:port`, `http(s)://host:port` or `unix:///path.sock` (a node daemon).
 - **Author:** `--author "Name <email>"` > `$KUDZU_AUTHOR` > `user <user@host>`.
 - **Writable mounts:** inside a directory mounted with `kudzu mount --writable`, edit files normally; `kudzu status`, `diff`, `commit -m MSG --land main` and `update` work there as in a working copy, and only files you read or edit are downloaded.
-- **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access.
+- **Token:** if the server enforces access control, set `$KUDZU_TOKEN`. A 403 names the path or ref you may not read, write or land; don't retry it, work within the paths you are allowed or ask for access. A 500 says only `internal error (request ID)`: the details are in the server's log under that ID, so give the ID to whoever runs the server.
 - **Paths:** no path may contain a `.git` or `.kudzu` directory, in any case and at any depth; the server answers 400. A git checkout nested in a working copy is ignored by `status` and `commit -A`.
 - Changesets record changes relative to their first parent. History and blame follow first parents.
 

@@ -6,6 +6,8 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,11 +103,19 @@ func writeCtx(ctx context.Context) context.Context {
 }
 
 // redact removes paths the caller may not read from a conflict error, so a
-// merge or rebase against someone else's changes cannot list them.
+// merge or rebase against someone else's changes cannot list them, and from
+// a create's path error, which can name a file above the changed path.
 func redact(ctx context.Context, err error) error {
 	p := auth.FromContext(ctx)
+	if p.ReadsAll("") {
+		return err
+	}
+	var pe *repo.PathError
+	if errors.As(err, &pe) && !p.CanRead(pe.Path) {
+		return fmt.Errorf("%w: a change does not fit the tree at a path you may not read", repo.ErrInvalid)
+	}
 	var ce *repo.ConflictError
-	if p.ReadsAll("") || !errors.As(err, &ce) {
+	if !errors.As(err, &ce) {
 		return err
 	}
 	out := &repo.ConflictError{Hidden: ce.Hidden}
@@ -191,10 +201,26 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 	case errors.Is(err, store.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	case errors.Is(err, errTooLarge):
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": err.Error()})
+	case errors.Is(err, repo.ErrContended):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 	default:
-		s.Log.Printf("internal error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		// Backend errors can name object keys, and so the real ID of a tree
+		// the caller may only see filtered: they stay in the log, and the
+		// caller gets the request ID that finds them there.
+		id := requestID()
+		s.Log.Printf("internal error (request %s): %v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error (request " + id + ")"})
 	}
+}
+
+// requestID returns a short random ID that ties an error response to its
+// log line.
+func requestID() string {
+	var b [4]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (s *Server) resolve(ctx context.Context, rev string) (object.ID, error) {
@@ -204,8 +230,25 @@ func (s *Server) resolve(ctx context.Context, rev string) (object.ID, error) {
 	return s.Repo.Resolve(ctx, rev)
 }
 
-func decodeBody(r *http.Request, v any) error {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 256<<20)).Decode(v); err != nil {
+// Request body limits. Handlers check what they can of the caller's
+// permissions before reading the body, so that a caller who may not make a
+// request cannot make the server read and decode a large one.
+const (
+	maxLargeBody = 256 << 20 // a create's change list, or the IDs to upload
+	maxMergeBody = 8 << 20   // a merge's message and author, even if every byte is escaped
+	maxSmallBody = 64 << 10  // land, rebase, ref moves
+)
+
+// errTooLarge is a request body over its endpoint's limit (413).
+var errTooLarge = errors.New("request body too large")
+
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) error {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(v)
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		return fmt.Errorf("%w (at most %d bytes)", errTooLarge, limit)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: bad request body: %v", repo.ErrInvalid, err)
 	}
 	return nil
@@ -220,6 +263,49 @@ func checkUpload(ctx context.Context) error {
 	return nil
 }
 
+// checkWriter lets only principals that may write somewhere create, rebase
+// or merge: a changeset with no changes passes every path check, so nothing
+// else would stop a reader from appending to the log.
+func checkWriter(ctx context.Context) error {
+	if p := auth.FromContext(ctx); !p.WritesAnywhere() {
+		return &auth.DeniedError{Principal: p.Name, Action: "create"}
+	}
+	return nil
+}
+
+// Limits on what one changeset from the API may hold. Real changesets stay
+// far below them (git imports, which do not go through the API, have none);
+// they bound what a single request can make the server store and look up.
+const (
+	maxParents = 1000
+	maxChanges = 1_000_000
+	maxMessage = 1 << 20
+	maxAuthor  = 4 << 10
+	maxExtra   = 64 << 10 // keys and values together
+)
+
+func checkLimits(req *repo.CreateRequest) error {
+	extra := 0
+	for k, v := range req.Extra {
+		extra += len(k) + len(v)
+	}
+	for _, l := range []struct {
+		what   string
+		n, max int
+	}{
+		{"parents", len(req.Parents), maxParents},
+		{"changes", len(req.Changes), maxChanges},
+		{"bytes of message", len(req.Message), maxMessage},
+		{"bytes of author", len(req.Author), maxAuthor},
+		{"bytes of extra", extra, maxExtra},
+	} {
+		if l.n > l.max {
+			return fmt.Errorf("%w: %d %s (at most %d)", repo.ErrInvalid, l.n, l.what, l.max)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 	if err := checkUpload(r.Context()); err != nil {
 		s.fail(w, err)
@@ -228,7 +314,7 @@ func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []object.ID `json:"ids"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxLargeBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -399,8 +485,20 @@ type CreateResponse struct {
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req CreateRequest
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxLargeBody, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := checkLimits(&req.CreateRequest); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := checkParents(auth.FromContext(ctx), req.Parents); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -412,7 +510,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.Repo.Create(ctx, req.CreateRequest)
 	if err != nil {
-		s.fail(w, err)
+		s.fail(w, redact(ctx, err))
 		return
 	}
 	s.created.Add(1)
@@ -431,6 +529,26 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		resp.Land = res
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// checkParents refuses a parent named twice, and a second parent from a
+// principal whose writes are checked. A merge claims its other parents'
+// changes, but only changes against the first parent are checked: naming
+// someone's pending changeset would make it count as landed without any of
+// its content. Such principals merge with /api/merge, which computes the
+// merged changes and so checks them.
+func checkParents(p *auth.Principal, parents []object.ID) error {
+	seen := make(map[object.ID]bool, len(parents))
+	for _, id := range parents {
+		if seen[id] {
+			return fmt.Errorf("%w: parent %s is named twice", repo.ErrInvalid, id.Short())
+		}
+		seen[id] = true
+	}
+	if len(parents) > 1 && !p.WritesAll("") {
+		return &auth.DeniedError{Principal: p.Name, Action: "merge"}
+	}
+	return nil
 }
 
 func (s *Server) noteLand(res *repo.LandResult) {
@@ -728,15 +846,15 @@ func (s *Server) handleRefs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
+	if err := auth.FromContext(r.Context()).CheckLand(r.PathValue("name")); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Old object.ID `json:"old"`
 		New string    `json:"new"`
 	}
-	if err := decodeBody(r, &req); err != nil {
-		s.fail(w, err)
-		return
-	}
-	if err := auth.FromContext(r.Context()).CheckLand(r.PathValue("name")); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -757,11 +875,15 @@ func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Head string `json:"head"`
 		Onto string `json:"onto"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -790,13 +912,21 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Ours    string `json:"ours"`
 		Theirs  string `json:"theirs"`
 		Author  string `json:"author"`
 		Message string `json:"message"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxMergeBody, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := checkLimits(&repo.CreateRequest{Author: req.Author, Message: req.Message}); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -828,7 +958,7 @@ func (s *Server) handleLand(w http.ResponseWriter, r *http.Request) {
 		Head string `json:"head"`
 		Ref  string `json:"ref"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, maxSmallBody, &req); err != nil {
 		s.fail(w, err)
 		return
 	}
