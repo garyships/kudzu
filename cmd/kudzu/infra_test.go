@@ -112,3 +112,61 @@ func TestSnapshotInterrupted(t *testing.T) {
 		t.Fatalf("partial snapshot left behind: %v", err)
 	}
 }
+
+// TestGuardBrowsers: a tier refuses what only a web page would send, cross-
+// origin writes and (on loopback) Host names a DNS-rebinding page uses,
+// while kudzu's own clients, which send neither, get through.
+func TestGuardBrowsers(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveListener(ctx, l, ok) }()
+	defer func() { cancel(); <-done }()
+	addr := l.Addr().String()
+	_, port, _ := net.SplitHostPort(addr)
+
+	for _, tc := range []struct {
+		name, method, host string
+		header             map[string]string
+		want               int
+	}{
+		{"client", "POST", addr, nil, http.StatusOK},
+		{"localhost", "GET", "localhost:" + port, nil, http.StatusOK},
+		{"ipv6", "GET", "[::1]:" + port, nil, http.StatusOK},
+		{"same origin", "POST", addr, map[string]string{"Origin": "http://" + addr}, http.StatusOK},
+		{"rebound read", "GET", "rebind.example:" + port, nil, http.StatusMisdirectedRequest},
+		{"rebound write", "POST", "rebind.example:" + port, map[string]string{"Origin": "http://rebind.example:" + port}, http.StatusMisdirectedRequest},
+		{"cross-origin write", "POST", addr, map[string]string{"Origin": "https://evil.example", "Content-Type": "text/plain"}, http.StatusForbidden},
+		{"cross-site write", "POST", addr, map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest(tc.method, "http://"+addr+"/api/refs/x", nil)
+		req.Host = tc.host
+		for k, v := range tc.header {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s: status %d, want %d", tc.name, resp.StatusCode, tc.want)
+		}
+	}
+}
+
+func TestLoopbackHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"127.0.0.1:7070": true, "127.0.0.1": true, "[::1]:7070": true, "[::1]": true,
+		"localhost:7070": true, "LOCALHOST.": true, "a.localhost:1": true, "10.1.2.3:80": true, "": true,
+		"example.com:7070": false, "localhost.example.com": false, "127.0.0.1.nip.io:7070": false,
+	} {
+		if got := loopbackHost(host); got != want {
+			t.Errorf("loopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}

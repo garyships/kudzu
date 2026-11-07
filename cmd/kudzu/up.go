@@ -50,7 +50,7 @@ func cmdUp(ctx context.Context, args []string) error {
 	ref := fs.String("ref", "HEAD", "git revision to import")
 	as := fs.String("as", "main", "kudzu ref to point at the imported tip")
 	dir := fs.String("dir", "", "data directory (default: a per-repository folder in your user cache dir)")
-	port := fs.Int("port", 7070, "server port; the regional cache uses port+1 (0 picks free ports)")
+	port := fs.Int("port", 0, "ignored: the server and cache listen on private unix sockets (kept so old scripts still run)")
 	sock := fs.String("socket", defaultSocket(), "unix socket for the node daemon")
 	sockMode := addSocketModeFlag(fs)
 	force := fs.Bool("force", false, "move --as to the imported tip even if that drops changesets landed in kudzu")
@@ -92,18 +92,27 @@ func cmdUp(ctx context.Context, args []string) error {
 	if *verbose {
 		logOut = os.Stderr
 	}
-	serverL, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
-	if err != nil {
-		return fmt.Errorf("server: %w (pass --port to use another one)", err)
-	}
-	cachePort := 0
 	if *port != 0 {
-		cachePort = *port + 1
+		fmt.Fprintln(os.Stderr, "kudzu up: --port is ignored; the server and cache listen on unix sockets only you can reach")
 	}
-	cacheL, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cachePort))
+	// The server and cache serve the whole API without --auth, so they
+	// listen where only this user can connect, like the daemon: on TCP,
+	// even loopback, any local user could read the repository and land.
+	tierDir, err := os.MkdirTemp("", "kudzu-up-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tierDir)
+	serverAddr := "unix://" + filepath.Join(tierDir, "server.sock")
+	cacheAddr := "unix://" + filepath.Join(tierDir, "cache.sock")
+	serverL, err := listen(serverAddr, 0o600)
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	cacheL, err := listen(cacheAddr, 0o600)
 	if err != nil {
 		serverL.Close()
-		return fmt.Errorf("cache: %w (pass --port to use another one)", err)
+		return fmt.Errorf("cache: %w", err)
 	}
 	daemonL, err := listen("unix://"+*sock, *sockMode)
 	if err != nil {
@@ -113,7 +122,6 @@ func cmdUp(ctx context.Context, args []string) error {
 	}
 	defer os.Remove(*sock)
 
-	serverAddr, cacheAddr := serverL.Addr().String(), cacheL.Addr().String()
 	srv := server.New(r, log.New(logOut, "kudzu-server ", log.LstdFlags))
 	toServer, _ := proto.Dial(serverAddr)
 	cache := tier.New("cache", store.NewMem(1<<30), toServer, 32)
@@ -146,8 +154,8 @@ func cmdUp(ctx context.Context, args []string) error {
 	fmt.Printf(`
 kudzu is up: %d commits imported (%d new), %s -> %s
 
-  server   http://%s
-  cache    http://%s   (regional, in memory)
+  server   %s
+  cache    %s   (regional, in memory)
   daemon   %s   (this machine, on disk)
   data     %s
 

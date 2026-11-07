@@ -218,3 +218,36 @@ func TestFetchTruncatedResponse(t *testing.T) {
 		t.Fatalf("delivered %d objects in %d requests", got, requests.Load())
 	}
 }
+
+// TestNoRedirects: a redirect is an error that says where it points, not a
+// second request that carries the token there.
+func TestNoRedirects(t *testing.T) {
+	var leaked atomic.Int64
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			leaked.Add(1)
+		}
+		io.WriteString(w, "{}")
+	}))
+	defer elsewhere.Close()
+	tier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer tier.Close()
+	t.Setenv("KUDZU_TOKEN", "secret")
+	rem, err := Dial(tier.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	err = rem.GetJSON(t.Context(), "/api/refs", nil, &out)
+	if err == nil || !strings.Contains(err.Error(), elsewhere.URL) {
+		t.Fatalf("GetJSON after a redirect: %v", err)
+	}
+	if err := rem.PostJSON(t.Context(), "/api/land", map[string]string{}, &out); err == nil {
+		t.Fatal("PostJSON followed a redirect")
+	}
+	if leaked.Load() != 0 {
+		t.Fatal("the token followed the redirect")
+	}
+}

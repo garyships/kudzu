@@ -47,7 +47,11 @@ func Dial(addr string) (*Remote, error) {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Minute,
 	}
-	r := &Remote{Addr: addr, Token: os.Getenv("KUDZU_TOKEN"), hc: &http.Client{Transport: tr}}
+	// No tier ever redirects. Following one would send the token and the
+	// request to wherever the response points (Go keeps Authorization for
+	// the same host on another port or scheme, and for its subdomains).
+	noRedirects := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	r := &Remote{Addr: addr, Token: os.Getenv("KUDZU_TOKEN"), hc: &http.Client{Transport: tr, CheckRedirect: noRedirects}}
 	if sock, ok := strings.CutPrefix(addr, "unix://"); ok {
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
@@ -126,6 +130,8 @@ func (r *Remote) do(ctx context.Context, method, path string, q url.Values, body
 			if j.Path != nil {
 				he.Path = *j.Path
 			}
+		} else if loc := resp.Header.Get("Location"); resp.StatusCode/100 == 3 && loc != "" {
+			he.Message = fmt.Sprintf("%s redirects to %s; kudzu does not follow redirects, so use the address it points to", r.Addr, loc)
 		}
 		return nil, he
 	}
