@@ -12,10 +12,13 @@ package tier
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"sync"
@@ -31,6 +34,9 @@ type Tier struct {
 	Name  string
 	Local store.Objects
 	Up    *proto.Remote
+	// Log gets what the tier keeps from its clients, such as why a fetch
+	// failed; nil means the standard logger.
+	Log *log.Logger
 
 	mu          sync.Mutex
 	inflight    map[object.ID]*call
@@ -411,10 +417,38 @@ func (t *Tier) Stats() Stats {
 	return s
 }
 
+// clientSource is the tier as its clients see it. They may be anonymous,
+// and why a fetch failed can name upstream hosts, buckets, keys and local
+// paths, so they get a request ID and the tier's log gets the reason under
+// it, as the server does with its internal errors.
+type clientSource struct{ t *Tier }
+
+func (s clientSource) FetchMany(ctx context.Context, ids []object.ID, emit func(object.ID, []byte) error) ([]object.ID, error) {
+	missing, err := s.t.FetchMany(ctx, ids, emit)
+	if err != nil {
+		var b [4]byte
+		rand.Read(b[:])
+		id := hex.EncodeToString(b[:])
+		if ctx.Err() == nil { // not just a client hanging up
+			s.t.logf("%s: fetching %d objects (request %s): %v", s.t.Name, len(ids), id, err)
+		}
+		err = fmt.Errorf("%s: fetching objects failed (request %s)", s.t.Name, id)
+	}
+	return missing, err
+}
+
+func (t *Tier) logf(format string, args ...any) {
+	if t.Log != nil {
+		t.Log.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
+}
+
 // Handler serves the object protocol locally and proxies the rest upstream.
 func (t *Tier) Handler() http.Handler {
 	mux := http.NewServeMux()
-	proto.RegisterObjectRoutes(mux, t, &t.counters)
+	proto.RegisterObjectRoutes(mux, clientSource{t}, &t.counters)
 	up := t.Up.BaseURL()
 	proxy := &httputil.ReverseProxy{
 		// The upstream gets its own host as Host, not the client's: behind
@@ -425,6 +459,7 @@ func (t *Tier) Handler() http.Handler {
 		Rewrite:       func(pr *httputil.ProxyRequest) { pr.SetURL(up) },
 		Transport:     t.Up.Transport(),
 		FlushInterval: -1,
+		ErrorLog:      t.Log,
 	}
 	mux.Handle("/api/", proxy)
 	mux.Handle("POST /objects/missing", proxy)

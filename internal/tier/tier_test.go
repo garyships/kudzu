@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,77 @@ func TestProxyHeaders(t *testing.T) {
 	s = via(t, up, "GET", "/api/resolve?rev=main", "Bearer client-token", "")
 	if want := (seen{"unix", "Bearer client-token", "", "/api/resolve?rev=main", ""}); s != want {
 		t.Fatalf("upstream on a unix socket saw %+v, want %+v", s, want)
+	}
+}
+
+// lockedBuffer is a log destination tests can read while servers write.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestFetchErrorsHiddenFromClients: when a tier can't fetch an object, its
+// possibly anonymous clients get a generic error with a request ID, and the
+// reason, which can name upstream hosts, buckets, keys and paths, goes to
+// the tier's log under that ID.
+func TestFetchErrorsHiddenFromClients(t *testing.T) {
+	id := object.Hash(object.KindBlob, []byte("x"))
+	denied := upstream(t, func(w http.ResponseWriter, _ *http.Request, _ []object.ID) {
+		http.Error(w, "GET s3://secret-bucket/objects/ab/cd: AccessDenied", http.StatusForbidden)
+	})
+	downSrv := httptest.NewServer(http.NotFoundHandler())
+	down, _ := proto.Dial(downSrv.URL)
+	downSrv.Close()
+	downHost := strings.TrimPrefix(downSrv.URL, "http://")
+
+	for _, c := range []struct {
+		up     *proto.Remote
+		secret string
+	}{{denied, "secret-bucket"}, {down, downHost}} {
+		var logged lockedBuffer
+		tr := New("cache", store.NewMem(1<<20), c.up, 2)
+		tr.Log = log.New(&logged, "", 0)
+		srv := httptest.NewServer(tr.Handler())
+		for _, req := range []func() (*http.Response, error){
+			func() (*http.Response, error) { return http.Get(srv.URL + "/objects/" + id.String()) },
+			func() (*http.Response, error) {
+				return http.Post(srv.URL+"/objects/fetch", "application/octet-stream", strings.NewReader(string(id[:])))
+			},
+		} {
+			resp, err := req()
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			_, reqID, _ := strings.Cut(strings.TrimSpace(string(b)), "(request ")
+			reqID = strings.TrimSuffix(reqID, ")")
+			if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(b), c.secret) || !strings.HasPrefix(string(b), "cache:") || reqID == "" {
+				t.Errorf("client got %d %q, want a 502 naming the tier and a request ID, not %q", resp.StatusCode, b, c.secret)
+				continue
+			}
+			for _, line := range strings.Split(logged.String(), "\n") {
+				if strings.Contains(line, reqID) && strings.Contains(line, c.secret) {
+					reqID = ""
+				}
+			}
+			if reqID != "" {
+				t.Errorf("tier log %q does not give the reason (%q) under request %s", logged.String(), c.secret, reqID)
+			}
+		}
+		srv.Close()
 	}
 }
 
