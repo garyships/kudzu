@@ -220,6 +220,49 @@ func checkUpload(ctx context.Context) error {
 	return nil
 }
 
+// checkWriter lets only principals that may write somewhere create, rebase
+// or merge: a changeset with no changes passes every path check, so nothing
+// else would stop a reader from appending to the log.
+func checkWriter(ctx context.Context) error {
+	if p := auth.FromContext(ctx); !p.WritesAnywhere() {
+		return &auth.DeniedError{Principal: p.Name, Action: "create"}
+	}
+	return nil
+}
+
+// Limits on what one changeset from the API may hold. Real changesets stay
+// far below them (git imports, which do not go through the API, have none);
+// they bound what a single request can make the server store and look up.
+const (
+	maxParents = 1000
+	maxChanges = 1_000_000
+	maxMessage = 1 << 20
+	maxAuthor  = 4 << 10
+	maxExtra   = 64 << 10 // keys and values together
+)
+
+func checkLimits(req *repo.CreateRequest) error {
+	extra := 0
+	for k, v := range req.Extra {
+		extra += len(k) + len(v)
+	}
+	for _, l := range []struct {
+		what   string
+		n, max int
+	}{
+		{"parents", len(req.Parents), maxParents},
+		{"changes", len(req.Changes), maxChanges},
+		{"bytes of message", len(req.Message), maxMessage},
+		{"bytes of author", len(req.Author), maxAuthor},
+		{"bytes of extra", extra, maxExtra},
+	} {
+		if l.n > l.max {
+			return fmt.Errorf("%w: %d %s (at most %d)", repo.ErrInvalid, l.n, l.what, l.max)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleMissing(w http.ResponseWriter, r *http.Request) {
 	if err := checkUpload(r.Context()); err != nil {
 		s.fail(w, err)
@@ -399,8 +442,16 @@ type CreateResponse struct {
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req CreateRequest
 	if err := decodeBody(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := checkLimits(&req.CreateRequest); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -781,6 +832,10 @@ func (s *Server) handleSetRef(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Head string `json:"head"`
 		Onto string `json:"onto"`
@@ -814,6 +869,10 @@ func (s *Server) handleRebase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	ctx := writeCtx(r.Context())
+	if err := checkWriter(ctx); err != nil {
+		s.fail(w, err)
+		return
+	}
 	var req struct {
 		Ours    string `json:"ours"`
 		Theirs  string `json:"theirs"`
@@ -821,6 +880,10 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		Message string `json:"message"`
 	}
 	if err := decodeBody(r, &req); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := checkLimits(&repo.CreateRequest{Author: req.Author, Message: req.Message}); err != nil {
 		s.fail(w, err)
 		return
 	}

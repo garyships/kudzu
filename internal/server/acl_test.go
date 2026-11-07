@@ -217,6 +217,66 @@ func TestNoForgedMergeParents(t *testing.T) {
 	}
 }
 
+// TestOnlyWritersCreate: a principal that may not write anywhere cannot
+// create, rebase or merge, although a changeset with no changes passes every
+// path check.
+func TestOnlyWritersCreate(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, `"read": ["docs"], "land": ["main"]`)
+	empty := g.commit(t, g.main, "empty", nil)
+	docs := g.commit(t, g.main, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	if err := g.r.Meta.CASRef(ctx, "main", g.main, docs); err != nil {
+		t.Fatal(err)
+	}
+	before, err := g.r.Meta.WAL(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]any{
+		"/api/changesets": map[string]any{"parents": []object.ID{docs}, "author": "Release Manager", "message": "release"},
+		"/api/rebase":     map[string]string{"head": empty.String(), "onto": "main"},
+		"/api/merge":      map[string]string{"ours": "main", "theirs": empty.String()},
+	} {
+		if err := g.alice.PostJSON(ctx, path, body, nil); status(err) != http.StatusForbidden {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+	if after, err := g.r.Meta.WAL(ctx, 0, 100); err != nil || len(after) != len(before) {
+		t.Fatalf("the log grew from %d to %d entries (%v)", len(before), len(after), err)
+	}
+}
+
+// TestCreateLimits: what a changeset from the API may hold is bounded.
+func TestCreateLimits(t *testing.T) {
+	ctx := context.Background()
+	g := newRig(t, aliceAPI)
+	many := make([]object.ID, maxParents+1)
+	for i := range many {
+		many[i] = g.main
+	}
+	one := []object.ID{g.main}
+	for what, req := range map[string]map[string]any{
+		"parents":          {"parents": many, "author": "a", "message": "m"},
+		"bytes of message": {"parents": one, "author": "a", "message": strings.Repeat("m", maxMessage+1)},
+		"bytes of author":  {"parents": one, "author": strings.Repeat("a", maxAuthor+1), "message": "m"},
+		"bytes of extra":   {"parents": one, "author": "a", "message": "m", "extra": map[string]string{"k": strings.Repeat("v", maxExtra)}},
+	} {
+		err := g.admin.PostJSON(ctx, "/api/changesets", req, nil)
+		var he *proto.HTTPError
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest || !strings.Contains(he.Message, what+" (at most") {
+			t.Errorf("too many %s: %v", what, err)
+		}
+	}
+	if err := g.admin.PostJSON(ctx, "/api/changesets", map[string]any{"parents": one, "author": "a", "message": strings.Repeat("m", maxMessage)}, nil); err != nil {
+		t.Errorf("a message at the limit: %v", err)
+	}
+	other := g.commit(t, g.main, "docs", map[string]string{"docs/guide.md": "new guide\n"})
+	err := g.admin.PostJSON(ctx, "/api/merge", map[string]any{"ours": "main", "theirs": other.String(), "message": strings.Repeat("m", maxMessage+1)}, nil)
+	if status(err) != http.StatusBadRequest {
+		t.Errorf("a merge with too long a message: %v", err)
+	}
+}
+
 // TestNoGuessingHiddenContent: whether a write to an unreadable path is
 // refused must not depend on what the path holds.
 func TestNoGuessingHiddenContent(t *testing.T) {
