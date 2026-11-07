@@ -2,7 +2,9 @@ package object
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
+	"hash/adler32"
 	"runtime"
 	"strings"
 	"testing"
@@ -254,6 +256,57 @@ func TestValidGitlink(t *testing.T) {
 	} {
 		if got := ValidGitlink([]byte(content)); got != want {
 			t.Errorf("ValidGitlink(%q) = %v, want %v", content, got, want)
+		}
+	}
+}
+
+// zlibPadded compresses content into a zlib stream that starts with n empty
+// stored blocks: valid zlib that inflates to content, but larger than what
+// Encode writes.
+func zlibPadded(t *testing.T, content []byte, n int) []byte {
+	t.Helper()
+	b := []byte{0x78, 0x01}
+	for range n {
+		b = append(b, 0x00, 0x00, 0x00, 0xff, 0xff) // not final, stored, length 0
+	}
+	var deflated bytes.Buffer
+	fw, _ := flate.NewWriter(&deflated, flate.BestSpeed)
+	fw.Write(content)
+	fw.Close()
+	b = append(b, deflated.Bytes()...)
+	return binary.BigEndian.AppendUint32(b, adler32.Checksum(content))
+}
+
+// TestPaddedStoredForms: an object that hashes right but carries more bytes
+// than Encode writes, after the zlib stream or inside it, is refused, so a
+// client cannot make every tier store and serve a bloated copy.
+func TestPaddedStoredForms(t *testing.T) {
+	for _, n := range []int{1000, checkInMemory + 1000} {
+		content := bytes.Repeat([]byte{'k'}, n)
+		id, stored := EncodeObject(KindBlob, content)
+		if stored[1] != codecZlib {
+			t.Fatalf("%d bytes: not compressed", n)
+		}
+		trailing := append(bytes.Clone(stored), make([]byte, 4096)...)
+		padded := append([]byte{byte(KindBlob), codecZlib}, zlibPadded(t, content, n/5+1)...)
+		for name, bad := range map[string][]byte{"trailing bytes": trailing, "empty blocks": padded} {
+			_, _, verr := Verify(id, bad)
+			_, cerr := Check(id, bad)
+			if verr == nil || cerr == nil {
+				t.Errorf("%d bytes with %s (%d stored): accepted: %v %v", n, name, len(bad), verr, cerr)
+			}
+		}
+		if _, _, err := Decode(trailing); err == nil {
+			t.Errorf("%d bytes with trailing bytes: decoded", n)
+		}
+		// A stream padded less is still smaller than the raw form, which
+		// any client could send anyway, so it is not worth refusing.
+		light := append([]byte{byte(KindBlob), codecZlib}, zlibPadded(t, content, 1)...)
+		if _, _, err := Verify(id, light); err != nil {
+			t.Errorf("%d bytes, one empty block: %v", n, err)
+		}
+		if _, err := Check(id, light); err != nil {
+			t.Errorf("%d bytes, one empty block: %v", n, err)
 		}
 	}
 }

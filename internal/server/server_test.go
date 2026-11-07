@@ -90,6 +90,44 @@ func TestUploadDecompressionBomb(t *testing.T) {
 	}
 }
 
+// TestUploadKeepsStoredObject: re-uploading a blob the server has, even in
+// another valid stored form, leaves the stored copy alone; a padded form is
+// refused outright. Either way no client can make every fetch of someone
+// else's blob bigger.
+func TestUploadKeepsStoredObject(t *testing.T) {
+	// The server's own store, which (unlike Mem) replaces what it is given.
+	objs, err := store.OpenDurableFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, srv := newTestServer(t, objs)
+	content := bytes.Repeat([]byte("kudzu "), 1000)
+	id, err := r.WriteBlob(t.Context(), content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := objs.Get(t.Context(), id)
+	raw := append([]byte{byte(object.KindBlob), 0}, content...)
+	padded := append(bytes.Clone(stored), make([]byte, 64<<10)...)
+	for _, tc := range []struct {
+		name   string
+		form   []byte
+		status int
+	}{
+		{"raw", raw, http.StatusOK},
+		{"padded", padded, http.StatusBadRequest},
+	} {
+		var body bytes.Buffer
+		proto.WriteFrame(&body, id, tc.form)
+		if status, _ := upload(t, srv, body.Bytes()); status != tc.status {
+			t.Errorf("%s: status %d, want %d", tc.name, status, tc.status)
+		}
+		if got, _ := objs.Get(t.Context(), id); !bytes.Equal(got, stored) {
+			t.Fatalf("%s upload replaced the stored object (%d bytes, was %d)", tc.name, len(got), len(stored))
+		}
+	}
+}
+
 // brokenObjects fails to read one object, like a disk with a bad sector.
 type brokenObjects struct {
 	store.Objects

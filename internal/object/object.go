@@ -238,6 +238,9 @@ func inflate(payload []byte, limit int) ([]byte, error) {
 			return nil, tooLarge(limit)
 		}
 		if err == io.EOF {
+			if f.br.Len() != 0 {
+				return nil, errTrailing
+			}
 			return b, nil
 		}
 		if err != nil {
@@ -253,7 +256,30 @@ func inflateTo(w io.Writer, payload []byte, limit int64) (int64, error) {
 		return 0, err
 	}
 	defer putInflater(f)
-	return io.Copy(w, &io.LimitedReader{R: f.zr, N: limit})
+	n, err := io.Copy(w, &io.LimitedReader{R: f.zr, N: limit})
+	if err == nil && n < limit && f.br.Len() != 0 {
+		// The stream ended before the limit, and not at the payload's end.
+		err = errTrailing
+	}
+	return n, err
+}
+
+// errTrailing reports bytes after a zlib stream's end. zlib stops reading
+// there, so without this check any amount of junk could ride along with an
+// object that still hashes right, and every tier and clone would carry it.
+// (zlib reads its source byte by byte when that is a bytes.Reader, so what
+// is left in the reader is exactly what follows the stream.)
+var errTrailing = errors.New("bytes after the end of the compressed payload")
+
+// checkCanonical refuses a compressed stored form that is not smaller than
+// the raw one. Encode only compresses when that saves space, so anything
+// larger was padded, for example with empty deflate blocks, and would make
+// every fetch of the object cost more than its content.
+func checkCanonical(id ID, stored int, content int64) error {
+	if int64(stored) >= content+2 {
+		return fmt.Errorf("object %s: %d stored bytes for %d bytes of content; it was not compressed by Encode", id.Short(), stored, content)
+	}
+	return nil
 }
 
 // Verify decodes a stored object and checks that it hashes to id.
@@ -268,6 +294,11 @@ func verify(id ID, stored []byte, limit int) (Kind, []byte, error) {
 	}
 	if Hash(kind, content) != id {
 		return 0, nil, fmt.Errorf("object %s: hash mismatch", id.Short())
+	}
+	if stored[1] == codecZlib {
+		if err := checkCanonical(id, len(stored), int64(len(content))); err != nil {
+			return 0, nil, err
+		}
 	}
 	return kind, content, nil
 }
@@ -299,7 +330,7 @@ func check(id ID, stored []byte, limit int) (Kind, error) {
 		if Hash(kind, content) != id {
 			return 0, fmt.Errorf("object %s: hash mismatch", id.Short())
 		}
-		return kind, nil
+		return kind, checkCanonical(id, len(stored), int64(len(content)))
 	}
 	if _, over := err.(tooLargeError); !over || small == limit {
 		return 0, fmt.Errorf("object %s: %w", id.Short(), err)
@@ -321,7 +352,7 @@ func check(id ID, stored []byte, limit int) (Kind, error) {
 	if got != id {
 		return 0, fmt.Errorf("object %s: hash mismatch", id.Short())
 	}
-	return kind, nil
+	return kind, checkCanonical(id, len(stored), n)
 }
 
 // EncodeObject is a convenience returning both the ID and stored form.
