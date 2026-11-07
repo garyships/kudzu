@@ -203,6 +203,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 	case errors.Is(err, errTooLarge):
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": err.Error()})
+	case errors.Is(err, repo.ErrContended):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 	default:
 		// Backend errors can name object keys, and so the real ID of a tree
 		// the caller may only see filtered: they stay in the log, and the

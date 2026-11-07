@@ -372,6 +372,18 @@ func TestInternalErrorsStayInTheLog(t *testing.T) {
 	}
 }
 
+// TestContendedLandKeepsItsMessage: a land that gave up because the ref kept
+// moving is not an internal error. The caller can retry, so it gets 503 and
+// the reason rather than a request ID.
+func TestContendedLandKeepsItsMessage(t *testing.T) {
+	srv := New(nil, log.New(io.Discard, "", 0))
+	w := httptest.NewRecorder()
+	srv.fail(w, fmt.Errorf("could not land on main after 200 attempts: %w", repo.ErrContended))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "could not land on main") {
+		t.Fatalf("status %d, body %s", w.Code, w.Body)
+	}
+}
+
 // TestNoGuessingHiddenContent: whether a write to an unreadable path is
 // refused must not depend on what the path holds.
 func TestNoGuessingHiddenContent(t *testing.T) {

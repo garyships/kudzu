@@ -518,5 +518,5 @@ func (r *Repo) Land(ctx context.Context, head object.ID, ref string) (*LandResul
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("could not land on %s after %d attempts", ref, maxAttempts)
+	return nil, fmt.Errorf("could not land on %s after %d attempts: %w", ref, maxAttempts, ErrContended)
 }
