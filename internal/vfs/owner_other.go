@@ -2,5 +2,7 @@
 
 package vfs
 
-// ownedByMe: there are no writable mounts on these systems.
-func ownedByMe(string) bool { return false }
+import "os"
+
+// private: there are no writable mounts on these systems.
+func private(os.FileInfo) bool { return false }

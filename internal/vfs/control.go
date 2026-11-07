@@ -195,31 +195,71 @@ type MountClient struct {
 	ctl  *proto.Remote
 }
 
-// FindMount finds the writable mount containing dir, if any.
+// FindMount finds the writable mount containing dir, if any. Like
+// client.Open, it stops at the nearest .kudzu, so a mount.json further up
+// never wins over the working copy that dir is in.
 func FindMount(dir string) (*MountClient, bool) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, false
 	}
 	for d := abs; ; d = filepath.Dir(d) {
-		p := filepath.Join(d, filepath.FromSlash(MountInfoPath))
-		if b, err := os.ReadFile(p); err == nil && ownedByMe(p) {
-			var info MountInfo
-			if json.Unmarshal(b, &info) != nil || info.Control == "" {
-				return nil, false
-			}
-			info.Root = d
-			ctl, err := proto.Dial("unix://" + info.Control)
+		if _, err := os.Lstat(filepath.Join(d, ".kudzu")); err == nil {
+			info, err := readMountInfo(d)
 			if err != nil {
 				return nil, false
 			}
-			ctl.Token = "" // the control socket is private to the mount's owner
+			ctl, err := proto.DialPrivate(info.Control)
+			if err != nil {
+				return nil, false
+			}
 			return &MountClient{Info: info, ctl: ctl}, true
 		}
 		if filepath.Dir(d) == d {
 			return nil, false
 		}
 	}
+}
+
+// readMountInfo reads root's .kudzu/mount.json. Someone else could have
+// planted one (in /tmp, say) to point the kudzu command, and its token, at
+// their own server, so the directory and the file must be the user's own
+// and nobody else's to write. The file is read through the directory that
+// was checked, not by a path a symlink could redirect in between.
+func readMountInfo(root string) (MountInfo, error) {
+	meta := filepath.Join(root, ".kudzu")
+	fi, err := os.Lstat(meta)
+	if err != nil {
+		return MountInfo{}, err
+	}
+	if !fi.IsDir() || !private(fi) {
+		return MountInfo{}, fmt.Errorf("%s is not a private directory", meta)
+	}
+	dir, err := os.OpenRoot(meta)
+	if err != nil {
+		return MountInfo{}, err
+	}
+	defer dir.Close()
+	if st, err := dir.Stat("."); err != nil || !os.SameFile(fi, st) {
+		return MountInfo{}, fmt.Errorf("%s changed while being opened", meta)
+	}
+	f, err := dir.Open("mount.json")
+	if err != nil {
+		return MountInfo{}, err
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || !private(st) {
+		return MountInfo{}, fmt.Errorf("%s is not a private file", f.Name())
+	}
+	var info MountInfo
+	if err := json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&info); err != nil {
+		return MountInfo{}, err
+	}
+	if info.Control == "" {
+		return MountInfo{}, fmt.Errorf("%s names no control socket", f.Name())
+	}
+	info.Root = root
+	return info, nil
 }
 
 // Base returns the changeset the mount's overlay sits on.

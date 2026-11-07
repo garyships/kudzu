@@ -159,7 +159,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 非对象请求（`/api/*`、上传）原样转发给上游，所以对客户端来说三层没有区别
 - daemon 可以用 `--seed` 从快照启动（`kudzu snapshot` 生成，内容是某个版本全部对象的帧流），之后只拉增量。对应文章里"daemon 从定期刷新的快照启动"
 - `/stats` 返回命中率、合并数、上游请求数
-- 能连上某一层的人就能通过它使用全部 API，所以 unix socket 创建时的权限是 0600（只有创建者能连），要共用 daemon 就显式加 `--socket-mode 0660` 或 `0666`。默认的 socket `/tmp/kudzu.sock` 所在目录人人可写，谁先绑定这个路径，谁就能收到所有任务的请求。因此 `proto.Dial` 连上之后、发送任何内容之前会检查：socket 在所有人可写的目录里，而属主既不是当前用户也不是 root，就拒绝使用（`internal/proto/socket_unix.go`）。多用户共用的 daemon 应该放在不是所有人可写的目录里。daemon 的对象目录默认放在每个用户自己的目录（`<用户缓存目录>/kudzu/daemon`，权限 0700），不再是临时目录里的固定路径；找不到用户缓存目录（没有 `HOME`）时，daemon、`kudzu up` 和可写挂载会要求传 `--dir` 或 `--overlay`，而不是退回到临时目录。`kudzu up` 里的 server 和 cache 不带 `--auth`，所以它们同样监听只有创建者能连的 unix socket，放在私有目录里，而不是任何本机用户都能连的回环 TCP 端口
+- 能连上某一层的人就能通过它使用全部 API，所以 unix socket 创建时的权限是 0600（只有创建者能连），要共用 daemon 就显式加 `--socket-mode 0660` 或 `0666`。默认的 socket `/tmp/kudzu.sock` 所在目录人人可写，谁先绑定这个路径，谁就能收到所有任务的请求。因此 `proto.Dial` 连上之后、发送任何内容之前会检查：socket 的属主既不是当前用户也不是 root，而它在所有人可写的目录里，或在这种目录里另一个用户的目录里（比如攻击者建的 `/tmp/x/`），就拒绝使用（`internal/proto/socket_unix.go`）。抽象 socket（`unix://@name`）没有属主也没有权限，谁都可能先绑定这个名字，所以不连接、直接拒绝。多用户共用的 daemon 应该放在不是所有人可写、也不在这种目录之下的目录里；`/run` 下属于 daemon 用户的目录就可以。daemon 的对象目录默认放在每个用户自己的目录（`<用户缓存目录>/kudzu/daemon`，权限 0700），不再是临时目录里的固定路径；找不到用户缓存目录（没有 `HOME`）时，daemon、`kudzu up` 和可写挂载会要求传 `--dir` 或 `--overlay`，而不是退回到临时目录。`kudzu up` 里的 server 和 cache 不带 `--auth`，所以它们同样监听只有创建者能连的 unix socket，放在私有目录里，而不是任何本机用户都能连的回环 TCP 端口
 - 网页可以让浏览器向用户本机上的某一层发请求。Kudzu 的客户端从来不是浏览器，所以每一层都拒绝跨源写请求（net/http 的 `CrossOriginProtection`，返回 403）；监听回环地址的层只接受 Host 为 `localhost` 或 IP 地址的请求（返回 421），DNS rebinding 的页面用不了这些名字。客户端从不跟随重定向，否则令牌会被带到响应指向的任何地方
 
 ## 8. 客户端（`internal/client`）
@@ -170,7 +170,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - **本地缓存**：tree 总是缓存在 `.kudzu/objects`；blob 只在远端不是本机 daemon 时才缓存，因为 daemon 已经替整台机器缓存了（`State.CacheBlobs`）。缓存有容量上限，按最近使用淘汰。缓存总大小在第一次写入需要它时才统计，而不是打开时就统计，所以只读的命令（`log`、`status`）不管缓存涨到多大都一样快；每个命令最多打开一次工作副本
 - **update**：同时遍历新旧两棵 tree，哈希相同的子树直接跳过，成本取决于差异大小。动手之前，如果新版本要放文件或建目录的位置上有未跟踪的文件（不管是否被忽略），就拒绝执行；`--force` 会连同本地修改一起丢弃它们。删除时只删索引跟踪的文件，即使加了 `--force`，也不管旧 tree 里列了什么：被忽略的文件、嵌套的 `.git`，以及上游删掉的 submodule 所在的目录都会保留。`kudzu sparse` 同样会拒绝，而且从不强制
 - **status**：size 和 mtime 跟索引一致就不读文件，否则读出来算哈希。被忽略的目录直接跳过，除非里面有被跟踪的文件；判断时查的是每次运行只建一次的"含跟踪文件的目录"集合。嵌套 git 仓库的 `.git` 会被忽略，因为 changeset 里不能有它
-- **所有权**：命令从当前目录往上找 `.kudzu` 目录，只有它属于当前用户时才使用（和 git 的 "dubious ownership" 规则一样），所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。`KUDZU_SAFE_DIRECTORY` 可以绕过这个检查
+- **所有权**：命令从当前目录往上找最近的 `.kudzu`，只有它是真正的目录（不是符号链接）、属于当前用户（和 git 的 "dubious ownership" 规则一样）、同组和其他用户都不能写时才使用，所以放在共享目录里的 `.kudzu` 不能把命令和它发送的 token 引到别的服务端。记录 remote 的状态文件通过检查过的那个目录读取（`os.OpenRoot`），检查之后再换成链接也没法改道。`KUDZU_SAFE_DIRECTORY` 可以绕过属主和权限检查
 - **commit**：先问服务端缺哪些 blob，只上传缺的，再请求服务端创建 changeset。changeset 一创建就在服务端了，没有 push 这一步。索引记下的是每个文件被读取之前的 size 和 mtime，所以提交过程中发生的修改仍会显示为已修改
 
 ### 虚拟化 checkout（`internal/vfs`、`internal/fusefs`）
@@ -182,7 +182,7 @@ POST /objects/fetch     请求体：若干个 32 字节 ID 直接拼接
 - 版本不会变，所以内核可以无限期缓存目录项、属性和页面（`FOPEN_KEEP_CACHE`、很长的超时）。文件的 mtime 取 changeset 的时间。sparse 和权限过滤的规则与普通 checkout 相同。
 - `internal/vfs` 不依赖 FUSE，可以单独测试；`internal/fusefs` 用 [go-fuse](https://github.com/hanwen/go-fuse) 做适配，只有加 `-tags fuse` 才编译，默认二进制不包含它。
 
-**可写挂载**（`kudzu mount --writable`）用 overlayfs 的方式保存改动（`internal/vfs/overlay.go`）：版本本身是按需获取的下层；写过或新建的文件完整地放在 overlay 目录里；删除的路径记成 whiteout。写文件前先把它复制上来（只取这一个 blob，先写在 overlay 旁边的 work 目录里，再改名放进去，崩溃也不会留下半个文件）；新建、删除、重命名文件，`mkdir`、符号链接、`chmod +x`、截断都支持，所以编辑器、`sed -i`、`cp`、`mv` 都能正常用。重命名一个在版本里有文件的目录会返回 `EXDEV`，`mv` 会改用复制。changeset 里不能有的名字（比如任何一级的 `.git`）会返回 `EINVAL`：commit 和 update 会清空 overlay，嵌套的 git 仓库会丢失，需要的话请在工作区里建。挂载进程在一个私有的控制 socket 上提供 overlay，并在挂载根目录的只读文件 `.kudzu/mount.json` 里写明地址（`.kudzu` 是保留路径，不会和仓库内容冲突）。`kudzu status`、`diff`、`commit [--land]`、`update`、`land` 会从当前目录找到这个文件，在挂载里直接工作，不需要工作区：status 对比 overlay 和版本，不下载任何东西；commit 只上传服务端缺的 blob，创建 changeset，把它（或 land 后的结果）当作新版本并清空 overlay。有文件正在被写时 commit 会拒绝；有未提交改动时 update 会拒绝，除非 `--force`。overlay 比挂载活得久：再次挂载同一个 overlay 会接着之前的改动。
+**可写挂载**（`kudzu mount --writable`）用 overlayfs 的方式保存改动（`internal/vfs/overlay.go`）：版本本身是按需获取的下层；写过或新建的文件完整地放在 overlay 目录里；删除的路径记成 whiteout。写文件前先把它复制上来（只取这一个 blob，先写在 overlay 旁边的 work 目录里，再改名放进去，崩溃也不会留下半个文件）；新建、删除、重命名文件，`mkdir`、符号链接、`chmod +x`、截断都支持，所以编辑器、`sed -i`、`cp`、`mv` 都能正常用。重命名一个在版本里有文件的目录会返回 `EXDEV`，`mv` 会改用复制。changeset 里不能有的名字（比如任何一级的 `.git`）会返回 `EINVAL`：commit 和 update 会清空 overlay，嵌套的 git 仓库会丢失，需要的话请在工作区里建。挂载进程在一个私有的控制 socket 上提供 overlay，并在挂载根目录的只读文件 `.kudzu/mount.json` 里写明地址（`.kudzu` 是保留路径，不会和仓库内容冲突）。`kudzu status`、`diff`、`commit [--land]`、`update`、`land` 会从当前目录找到这个文件，在挂载里直接工作，不需要工作区：status 对比 overlay 和版本，不下载任何东西；commit 只上传服务端缺的 blob，创建 changeset，把它（或 land 后的结果）当作新版本并清空 overlay。有文件正在被写时 commit 会拒绝；有未提交改动时 update 会拒绝，除非 `--force`。和工作区一样，只看当前目录往上最近的那个 `.kudzu`，所以工作区不会被误认成更上层的挂载。只有 `.kudzu` 是真正的目录（不是符号链接），而且它和 `mount.json` 都属于当前用户、别人不能写时，才使用这个文件，并且通过检查过的那个目录去读：否则放在 `/tmp` 这种共享目录里的文件，或者指向用户自己某个文件的链接，都能把命令和它发送的 token 引到别处。文件里写的控制 socket 必须是绝对路径、属于当前用户；在 Linux 上提供它的进程也必须属于当前用户（`SO_PEERCRED`），而且不在上面发送 token（`proto.DialPrivate`）。挂载会把 `.kudzu` 和 `mount.json` 显示成属于挂载它的用户，权限分别是 0755 和 0444。overlay 比挂载活得久：再次挂载同一个 overlay 会接着之前的改动。
 
 测试会挂载一个版本，依次运行 `ls`、`ls -l`、`cat`、`grep -r`，每一步之后都检查只取了真正读到的对象。
 

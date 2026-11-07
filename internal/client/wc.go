@@ -56,18 +56,22 @@ type WC struct {
 	Out    io.Writer
 }
 
-// Open finds the working copy containing dir.
+// Open finds the working copy containing dir: the nearest .kudzu above it.
+// vfs.FindMount stops at the same one, so of a writable mount and a working
+// copy, the nearer one is always the one used.
 func Open(dir string) (*WC, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
 	for d := abs; ; d = filepath.Dir(d) {
-		if st, err := os.Stat(filepath.Join(d, metaDir)); err == nil && st.IsDir() {
-			if err := checkOwner(d, st); err != nil {
+		if fi, err := os.Lstat(filepath.Join(d, metaDir)); err == nil {
+			meta, err := openMeta(d, fi)
+			if err != nil {
 				return nil, err
 			}
-			return load(d)
+			defer meta.Close()
+			return load(d, meta)
 		}
 		if filepath.Dir(d) == d {
 			return nil, fmt.Errorf("not inside a kudzu working copy: %s", abs)
@@ -75,18 +79,54 @@ func Open(dir string) (*WC, error) {
 	}
 }
 
-func load(root string) (*WC, error) {
-	w := &WC{Root: root, Out: io.Discard}
-	b, err := os.ReadFile(filepath.Join(root, metaDir, "state.json"))
+// openMeta opens root's .kudzu directory, which Lstat described as fi, if
+// checkOwner trusts it. It must be a real directory, not a symlink, and the
+// state that names the remote is read through the directory that was
+// checked: a path looked up again could have been redirected in between.
+func openMeta(root string, fi os.FileInfo) (*os.Root, error) {
+	path := filepath.Join(root, metaDir)
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing the working copy at %s: %s is a symlink, not a directory", root, path)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("refusing the working copy at %s: %s is not a directory", root, path)
+	}
+	if err := checkOwner(root, fi); err != nil {
+		return nil, err
+	}
+	meta, err := os.OpenRoot(path)
 	if err != nil {
 		return nil, err
+	}
+	if st, err := meta.Stat("."); err != nil || !os.SameFile(fi, st) {
+		meta.Close()
+		return nil, fmt.Errorf("refusing the working copy at %s: %s changed while it was being opened", root, path)
+	}
+	return meta, nil
+}
+
+// metaErr makes the path in an error from meta, which is relative to it,
+// a full one.
+func metaErr(meta *os.Root, err error) error {
+	var pe *os.PathError
+	if errors.As(err, &pe) && !filepath.IsAbs(pe.Path) {
+		pe.Path = filepath.Join(meta.Name(), pe.Path)
+	}
+	return err
+}
+
+func load(root string, meta *os.Root) (*WC, error) {
+	w := &WC{Root: root, Out: io.Discard}
+	b, err := meta.ReadFile("state.json")
+	if err != nil {
+		return nil, metaErr(meta, err)
 	}
 	if err := json.Unmarshal(b, &w.State); err != nil {
 		return nil, fmt.Errorf("corrupt working copy state: %w", err)
 	}
-	f, err := os.Open(filepath.Join(root, metaDir, "index"))
+	f, err := meta.Open("index")
 	if err != nil {
-		return nil, err
+		return nil, metaErr(meta, err)
 	}
 	defer f.Close()
 	if err := gob.NewDecoder(f).Decode(&w.Index); err != nil {

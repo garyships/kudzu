@@ -11,3 +11,6 @@ import (
 func checkedDial(sock string, dial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
 	return dial
 }
+
+// checkPrivateSocket accepts c: socket ownership is only checked on Unix.
+func checkPrivateSocket(string, net.Conn) error { return nil }

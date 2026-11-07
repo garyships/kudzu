@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/garyships/kudzu/internal/object"
 )
 
 // TestOpenRefusesForeignMetadata: a .kudzu directory that belongs to
@@ -37,5 +39,53 @@ func TestOpenRefusesForeignMetadata(t *testing.T) {
 			t.Fatalf("with %s=%s: %v", env[0], env[1], err)
 		}
 		t.Setenv(env[0], "")
+	}
+}
+
+// TestOpenRefusesRedirectableMetadata: Open uses a .kudzu only if it is a
+// real directory that nobody else can write to. Through a symlink, or with
+// others able to replace what is in it, the state that names the remote
+// could be someone else's even though the directory checks out as the
+// user's own.
+func TestOpenRefusesRedirectableMetadata(t *testing.T) {
+	r, remote := newServer(t, nil)
+	commit(t, r, object.ID{}, map[string]string{"README.md": "hi\n", "src/a.go": "package a\n"})
+	wc := clone(t, remote, nil)
+	meta := filepath.Join(wc.Root, metaDir)
+	sub := filepath.Join(wc.Root, "src")
+	t.Setenv("SUDO_UID", "")
+	t.Setenv("KUDZU_SAFE_DIRECTORY", "")
+	if _, err := Open(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []os.FileMode{0o775, 0o757, 0o777 | os.ModeSticky} {
+		if err := os.Chmod(meta, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(sub); err == nil || !strings.Contains(err.Error(), "chmod go-w "+meta) {
+			t.Fatalf(".kudzu with mode %s: Open = %v", mode, err)
+		}
+		t.Setenv("KUDZU_SAFE_DIRECTORY", wc.Root)
+		if _, err := Open(sub); err != nil {
+			t.Fatalf(".kudzu with mode %s, trusted: %v", mode, err)
+		}
+		t.Setenv("KUDZU_SAFE_DIRECTORY", "")
+	}
+	if err := os.Chmod(meta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user's own metadata, reached through a link: a link in a shared
+	// directory can be pointed elsewhere between the check and the reads.
+	elsewhere := filepath.Join(t.TempDir(), "meta")
+	if err := os.Rename(meta, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, meta); err != nil {
+		t.Skip(err)
+	}
+	if _, err := Open(sub); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlinked .kudzu: Open = %v", err)
 	}
 }
