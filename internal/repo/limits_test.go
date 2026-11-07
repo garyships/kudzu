@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/garyships/kudzu/internal/object"
 	"github.com/garyships/kudzu/internal/textdiff"
@@ -91,6 +92,41 @@ func TestPatchTooLarge(t *testing.T) {
 	}
 	if strings.Contains(patch, "+y\n") {
 		t.Errorf("a file over the limits was diffed by lines:\n%s", patch)
+	}
+}
+
+// TestLineWorkWaitsForSlot: blame computations and merges of files wait for
+// a line-work slot, and give up when their caller does.
+func TestLineWorkWaitsForSlot(t *testing.T) {
+	r := newTestRepo(t)
+	base := commit(t, r, nil, "base", files{"f": "a\nb\nc\nd\ne\n"})
+	upstream := commit(t, r, []object.ID{base}, "upstream", files{"f": "A\nb\nc\nd\ne\n"})
+	mine := commit(t, r, []object.ID{base}, "mine", files{"f": "a\nb\nc\nd\nE\n"})
+	r.lineWork = make(chan struct{}, 1)
+	r.lineWork <- struct{}{} // all slots busy
+	for what, work := range map[string]func(context.Context) error{
+		"blame": func(ctx context.Context) error {
+			_, err := r.Blame(ctx, mine, "f")
+			return err
+		},
+		"rebase": func(ctx context.Context) error {
+			_, err := r.Rebase(ctx, mine, upstream)
+			return err
+		},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		err := work(ctx)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s with every slot busy: %v", what, err)
+		}
+	}
+	<-r.lineWork
+	if _, err := r.Blame(context.Background(), mine, "f"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Rebase(context.Background(), mine, upstream); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -557,6 +557,25 @@ func deriveAsync(ctx context.Context, r *Repo, d *Deriver, key object.ID) <-chan
 	return ch
 }
 
+// waitForWaiters waits until n callers wait for d's value for key.
+func waitForWaiters(t *testing.T, r *Repo, d *Deriver, key object.ID, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		r.flights.mu.Lock()
+		got := 0
+		if f := r.flights.m[d.Name+" "+key.String()]; f != nil {
+			got = f.waiters
+		}
+		r.flights.mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d callers wait, want %d", got, n)
+		}
+	}
+}
+
 func waitDerive(t *testing.T, ch <-chan deriveResult, who string) deriveResult {
 	t.Helper()
 	select {
@@ -589,6 +608,7 @@ func TestDeriveSurvivesCanceledCaller(t *testing.T) {
 	first := deriveAsync(ctx, r, d, key)
 	<-started
 	second := deriveAsync(context.Background(), r, d, key)
+	waitForWaiters(t, r, d, key, 2)
 	cancel()
 	select {
 	case res := <-first:
@@ -604,6 +624,41 @@ func TestDeriveSurvivesCanceledCaller(t *testing.T) {
 	}
 	if n := calls.Load(); n != 1 {
 		t.Errorf("computed %d times, want once", n)
+	}
+}
+
+// Once every caller has given up, the computation is cancelled, and the next
+// caller starts a new one rather than getting the cancellation.
+func TestDeriveStopsWhenNobodyWaits(t *testing.T) {
+	r := newTestRepo(t)
+	started, stopped := make(chan struct{}), make(chan error, 1)
+	var calls atomic.Int32
+	d := testDeriver("test-abandoned", func(ctx context.Context) ([]byte, error) {
+		if calls.Add(1) > 1 {
+			return []byte("value"), nil
+		}
+		close(started)
+		select {
+		case <-ctx.Done():
+			stopped <- ctx.Err()
+		case <-time.After(5 * time.Second):
+			stopped <- nil
+		}
+		return nil, ctx.Err()
+	})
+	key := object.Hash(object.KindBlob, []byte("key"))
+	ctx, cancel := context.WithCancel(context.Background())
+	first := deriveAsync(ctx, r, d, key)
+	<-started
+	cancel()
+	if res := waitDerive(t, first, "canceled caller"); !errors.Is(res.err, context.Canceled) {
+		t.Errorf("canceled caller got %q, %v", res.val, res.err)
+	}
+	if err := <-stopped; err == nil {
+		t.Fatal("the computation kept running with nobody waiting for it")
+	}
+	if res := waitDerive(t, deriveAsync(context.Background(), r, d, key), "next caller"); res.err != nil || string(res.val) != "value" {
+		t.Fatalf("next caller got %q, %v", res.val, res.err)
 	}
 }
 

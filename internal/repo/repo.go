@@ -34,12 +34,18 @@ type Repo struct {
 	unodes     *lru.Cache[object.ID, *object.Unode]
 	derived    *lru.Cache[derivedKey, []byte]
 	flights    flightGroup
+	lineWork   chan struct{} // see lineSlot
 }
 
 type derivedKey struct {
 	kind string
 	id   object.ID
 }
+
+// lineWorkers is how many blame computations and three-way merges of files
+// run at once. They are CPU-bound, and at the textdiff limits each can hold
+// tens of megabytes, so more at once would only multiply the memory.
+const lineWorkers = 4
 
 func New(meta store.Meta, objs store.Objects) *Repo {
 	return &Repo{
@@ -50,6 +56,19 @@ func New(meta store.Meta, objs store.Objects) *Repo {
 		trees:      lru.New[object.ID, *object.Tree](200_000),
 		unodes:     lru.New[object.ID, *object.Unode](200_000),
 		derived:    lru.New[derivedKey, []byte](500_000),
+		lineWork:   make(chan struct{}, lineWorkers),
+	}
+}
+
+// lineSlot waits for one of the lineWorkers slots, or until ctx is done.
+// Blame computations take one inside the derivation, not in the request
+// that asked, so a client that hangs up cannot leave more of them running.
+func (r *Repo) lineSlot(ctx context.Context) (release func(), err error) {
+	select {
+	case r.lineWork <- struct{}{}:
+		return func() { <-r.lineWork }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

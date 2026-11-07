@@ -317,6 +317,11 @@ func (r *Repo) mergeBlobs(ctx context.Context, base, ours, theirs object.ID) (ob
 	case base == ours:
 		return theirs, true, nil
 	}
+	release, err := r.lineSlot(ctx)
+	if err != nil {
+		return object.Zero, false, err
+	}
+	defer release()
 	var bufs [3][]byte
 	for i, id := range []object.ID{base, ours, theirs} {
 		b, err := r.readText(ctx, id)

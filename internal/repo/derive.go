@@ -74,6 +74,9 @@ func (r *Repo) Derive(ctx context.Context, d *Deriver, key object.ID) ([]byte, e
 		}
 		stack := []frame{{key: key}}
 		for len(stack) > 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err // nobody waits for the value any more
+			}
 			top := len(stack) - 1
 			f := stack[top]
 			if _, ok, err := r.getDerived(ctx, d.Name, f.key); err != nil {
@@ -258,6 +261,11 @@ var BlameDeriver = &Deriver{
 		if !object.IsRegular(u.Mode) {
 			return json.Marshal(blameValue{Binary: true})
 		}
+		release, err := r.lineSlot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		content, err := r.readText(ctx, u.Content)
 		if errors.Is(err, errTooLarge) {
 			// Recorded without reading it all or splitting it into lines;
@@ -381,16 +389,20 @@ func (r *Repo) UnodeOf(ctx context.Context, id object.ID) (object.ID, error) {
 // computation runs on its own goroutine with a context that keeps the first
 // caller's values but not its cancellation, so a caller that gives up (a
 // client hanging up during a large blame) doesn't fail the others waiting for
-// the same value. Each caller stops waiting when its own context is done.
+// the same value. Each caller stops waiting when its own context is done, and
+// once no caller is left the computation is cancelled: otherwise hanging up
+// right after asking would start any amount of work nobody waits for.
 type flightGroup struct {
 	mu sync.Mutex
 	m  map[string]*flight
 }
 
 type flight struct {
-	done chan struct{} // closed once val and err are set
-	val  []byte
-	err  error
+	done    chan struct{} // closed once val and err are set
+	val     []byte
+	err     error
+	waiters int // guarded by flightGroup.mu
+	cancel  context.CancelFunc
 }
 
 func (g *flightGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
@@ -400,15 +412,27 @@ func (g *flightGroup) do(ctx context.Context, key string, fn func(context.Contex
 	}
 	f, ok := g.m[key]
 	if !ok {
-		f = &flight{done: make(chan struct{})}
+		fctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		f = &flight{done: make(chan struct{}), cancel: cancel}
 		g.m[key] = f
-		go g.run(context.WithoutCancel(ctx), key, f, fn)
+		go g.run(fctx, key, f, fn)
 	}
+	f.waiters++
 	g.mu.Unlock()
 	select {
 	case <-f.done:
 		return f.val, f.err
 	case <-ctx.Done():
+		g.mu.Lock()
+		if f.waiters--; f.waiters == 0 {
+			// The next caller starts afresh rather than join a cancelled
+			// computation.
+			f.cancel()
+			if g.m[key] == f {
+				delete(g.m, key)
+			}
+		}
+		g.mu.Unlock()
 		return nil, ctx.Err()
 	}
 }
@@ -422,8 +446,11 @@ func (g *flightGroup) run(ctx context.Context, key string, f *flight, fn func(co
 			f.val, f.err = nil, fmt.Errorf("derive %s: panic: %v", key, p)
 		}
 		g.mu.Lock()
-		delete(g.m, key)
+		if g.m[key] == f {
+			delete(g.m, key)
+		}
 		g.mu.Unlock()
+		f.cancel()
 		close(f.done)
 	}()
 	f.val, f.err = fn(ctx)
