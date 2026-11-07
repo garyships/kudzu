@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,8 +10,11 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -345,6 +349,86 @@ func TestUpdateKeepsUntrackedFiles(t *testing.T) {
 	}
 }
 
+// A tier answered a commit with a tree that also listed untracked and
+// ignored files and a nested .git. The next update diffed from that tree and
+// removed them, then failed on a directory, which --force removed too.
+func TestUpdateRemovesOnlyTrackedFiles(t *testing.T) {
+	ctx := context.Background()
+	for _, force := range []bool{false, true} {
+		r, upstream := newServer(t, nil)
+		commit(t, r, object.Zero, map[string]string{"README": "hi\n"})
+		forge := func(real object.ID) (object.ID, error) {
+			tr, err := r.ReadTree(ctx, real)
+			if err != nil {
+				return object.Zero, err
+			}
+			x := object.Hash(object.KindBlob, []byte("x"))
+			git, err := r.WriteTree(ctx, &object.Tree{Entries: []object.Entry{file("HEAD", x), file("config", x)}})
+			if err != nil {
+				return object.Zero, err
+			}
+			es := append([]object.Entry{file(".env", x), dir(".git", git), file("debug.log", x), file(".cache", x)}, tr.Entries...)
+			object.SortEntries(es)
+			return r.WriteTree(ctx, &object.Tree{Entries: es})
+		}
+		u, _ := url.Parse(upstream)
+		tier := httputil.NewSingleHostReverseProxy(u)
+		tier.ModifyResponse = func(resp *http.Response) error {
+			if resp.Request.Method != "POST" || resp.Request.URL.Path != "/api/changesets" {
+				return nil
+			}
+			var m map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+				return err
+			}
+			real, err := object.ParseID(m["tree"].(string))
+			if err != nil {
+				return err
+			}
+			if m["tree"], err = forge(real); err != nil {
+				return err
+			}
+			b, _ := json.Marshal(m)
+			resp.Body = io.NopCloser(bytes.NewReader(b))
+			resp.ContentLength = int64(len(b))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+			return nil
+		}
+		srv := httptest.NewServer(tier)
+		t.Cleanup(srv.Close)
+
+		wc := clone(t, srv.URL, nil)
+		mine := map[string]string{
+			".env":             "SECRET=1\n",
+			".git/HEAD":        "ref: refs/heads/main\n",
+			".git/config":      "[core]\n",
+			".kudzuignore":     "*.log\n.cache/\n",
+			"debug.log":        "ignored, but still mine",
+			".cache/pip/wheel": "hours of downloads",
+		}
+		for p, c := range mine {
+			writeTo(t, wc.Root, p, c)
+		}
+		writeTo(t, wc.Root, "README", "hello\n")
+		res, err := wc.Commit(ctx, "edit", "a", false, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		commit(t, r, res.ID, map[string]string{"other": "upstream\n"})
+		if err := wc.Update(ctx, "main", force); err != nil {
+			t.Errorf("update (force=%v): %v", force, err)
+		}
+		for p, want := range mine {
+			if b, err := os.ReadFile(filepath.Join(wc.Root, filepath.FromSlash(p))); string(b) != want {
+				t.Errorf("update (force=%v) lost untracked %s: %q %v", force, p, b, err)
+			}
+		}
+		if b, _ := os.ReadFile(filepath.Join(wc.Root, "other")); string(b) != "upstream\n" {
+			t.Errorf("update (force=%v) did not check out main", force)
+		}
+	}
+}
+
 // Submodules are not checked out, so one removed upstream is not in the
 // index. Update removed the directory the user's own checkout of it sits in:
 // a plain update failed half-way on it, and --force deleted it.
@@ -392,6 +476,34 @@ func TestUpdateLeavesSubmoduleCheckout(t *testing.T) {
 		if err := wc.Update(ctx, c1.ID.String(), false); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// Update refuses while tracked files are modified, but one can change after
+// that check; apply must not remove it then.
+func TestApplyKeepsFileChangedSinceStatus(t *testing.T) {
+	r, remote := newServer(t, nil)
+	commit(t, r, object.Zero, map[string]string{"a": "a\n", "b": "b\n"})
+	wc := clone(t, remote, nil)
+	writeTo(t, wc.Root, "b", "edited\n")
+	// Touched but not edited: still safe to remove.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(wc.Root, "a"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	err := wc.apply(ctx, nil, []string{"a", "b"}, false)
+	if err == nil || !strings.Contains(err.Error(), "lost: b (") {
+		t.Errorf("apply removing an edited file: %v", err)
+	}
+	if readFrom(t, wc.Root, "a") != "a\n" || readFrom(t, wc.Root, "b") != "edited\n" {
+		t.Fatal("a refused apply changed the working copy")
+	}
+	if err := wc.apply(ctx, nil, []string{"a"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(wc.Root, "a")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("apply left a: %v", err)
 	}
 }
 

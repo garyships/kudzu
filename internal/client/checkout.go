@@ -184,6 +184,15 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 					i++
 					j++
 				}
+				// A reserved name is never checked out, so there is nothing
+				// to remove: a nested .git is the user's, whatever the old
+				// tree lists.
+				if o != nil && object.ReservedName(o.Name) {
+					o = nil
+					if n == nil {
+						continue
+					}
+				}
 				name := ""
 				if o != nil {
 					name = o.Name
@@ -230,15 +239,27 @@ func (w *WC) diffTrees(ctx context.Context, oldRoot, newRoot object.ID, sp spars
 // working copy straight from the fetch stream on a worker pool; they are only
 // kept in the local object cache when no node daemon is caching them already.
 //
-// Without force, apply refuses before changing anything if an untracked file
-// is in the way, and it never removes what the index does not track. Nothing
-// is written through a symlink: directories are created one component at a
-// time, each write first checks the directories above it, and symlinks are
-// created last, one at a time, so no link this checkout makes exists yet
-// while files are written.
+// It only removes what the index tracks, force or not: the old tree may come
+// from a tier that lied about it, and an ignored file or a nested .git it
+// lists must stay. Without force, apply refuses before changing anything if
+// an untracked file is in the way or a file to remove has changed since it
+// was checked out. Nothing is written through a symlink: directories are
+// created one component at a time, each write first checks the directories
+// above it, and symlinks are created last, one at a time, so no link this
+// checkout makes exists yet while files are written.
 func (w *WC) apply(ctx context.Context, writes map[string]object.Entry, deletes []string, force bool) error {
+	var tracked []string
+	for _, p := range deletes {
+		if _, ok := w.Index[p]; ok {
+			tracked = append(tracked, p)
+		}
+	}
+	deletes = tracked
 	if !force {
 		if err := w.checkUntracked(writes, deletes); err != nil {
+			return err
+		}
+		if err := w.checkUnchanged(deletes); err != nil {
 			return err
 		}
 	}
@@ -399,11 +420,54 @@ type UntrackedError struct {
 }
 
 func (e *UntrackedError) Error() string {
-	ps, more := e.Paths, ""
+	return "untracked files would be overwritten: " + listPaths(e.Paths) + " (move or remove them first)"
+}
+
+func listPaths(ps []string) string {
+	more := ""
 	if len(ps) > 10 {
 		ps, more = ps[:10], fmt.Sprintf(" and %d more", len(ps)-10)
 	}
-	return "untracked files would be overwritten: " + strings.Join(ps, ", ") + more + " (move or remove them first)"
+	return strings.Join(ps, ", ") + more
+}
+
+// checkUnchanged finds tracked files to remove that no longer hold what was
+// checked out. Callers refuse local edits before they start, but a file can
+// change after that, and removing it would lose the edit.
+func (w *WC) checkUnchanged(deletes []string) error {
+	var changed []string
+	for _, p := range deletes {
+		if w.checkParents(p) != nil {
+			continue // not in the working copy, so apply leaves it alone
+		}
+		full := w.abs(p)
+		info, err := os.Lstat(full)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		ie := w.Index[p]
+		if mode, ok := modeOf(info); !ok || mode != ie.Mode {
+			changed = append(changed, p)
+			continue
+		}
+		if info.Size() == ie.Size && info.ModTime().UnixNano() == ie.MtimeNs {
+			continue
+		}
+		content, err := readContent(full, ie.Mode)
+		if err != nil {
+			return err
+		}
+		if object.Hash(object.KindBlob, content) != ie.Blob {
+			changed = append(changed, p)
+		}
+	}
+	if len(changed) > 0 {
+		sort.Strings(changed)
+		return fmt.Errorf("uncommitted changes would be lost: %s (commit them first)", listPaths(changed))
+	}
+	return nil
 }
 
 // checkUntracked finds what writing writes would overwrite that the index
