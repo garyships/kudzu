@@ -226,6 +226,14 @@ func (r *Repo) normalizeChanges(ctx context.Context, base object.ID, in []object
 			if len(stored) == 0 || object.Kind(stored[0]) != object.KindBlob {
 				return nil, fmt.Errorf("%w: %s: %s is not a blob", ErrInvalid, ch.Path, ch.Blob.Short())
 			}
+			if ch.Mode == object.ModeGitlink {
+				// kudzu export writes the pin into a git fast-import
+				// stream as is, so anything but a commit ID would be
+				// commands of its own there.
+				if _, content, err := object.Decode(stored); err != nil || !object.ValidGitlink(content) {
+					return nil, fmt.Errorf("%w: %s: a submodule's blob must hold a commit ID", ErrInvalid, ch.Path)
+				}
+			}
 			if err := store.Touch(ctx, r.Objs, ch.Blob); errors.Is(err, store.ErrNotFound) {
 				return nil, fmt.Errorf("%w: %s: blob %s was not uploaded", ErrInvalid, ch.Path, ch.Blob.Short())
 			} else if err != nil {

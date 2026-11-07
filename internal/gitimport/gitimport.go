@@ -77,7 +77,8 @@ func Run(ctx context.Context, r *repo.Repo, gitDir, ref, kudzuRef string, force 
 	if out, err := im.git("rev-parse", "--show-object-format"); err == nil && strings.TrimSpace(out) == "sha256" {
 		im.hashLen = 32
 	}
-	list, err := im.git("rev-list", "--topo-order", "--reverse", "--parents", ref)
+	// --end-of-options: a ref named like "--all" must not become an option.
+	list, err := im.git("rev-list", "--topo-order", "--reverse", "--parents", "--end-of-options", ref)
 	if err != nil {
 		return nil, err
 	}

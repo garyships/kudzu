@@ -336,6 +336,55 @@ func TestExportToEmptyRepo(t *testing.T) {
 	}
 }
 
+// TestExportSubmodules: a submodule exports as a gitlink to its commit, and
+// a submodule blob holding anything else (written before Create checked it)
+// stops the export instead of adding fast-import commands to the stream.
+func TestExportSubmodules(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	r := newRepo(t)
+	ctx := context.Background()
+	sha := strings.Repeat("ab", 20)
+	blob, _ := r.WriteBlob(ctx, []byte(sha))
+	c, err := r.Create(ctx, repo.CreateRequest{Author: "Alice <alice@example.com>", Time: 1767196800, Message: "pin",
+		Changes: []object.Change{{Path: "vendor/lib", Mode: object.ModeGitlink, Blob: blob}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Meta.CASRef(ctx, "main", object.Zero, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	mirror := filepath.Join(t.TempDir(), "mirror.git")
+	git(t, t.TempDir(), "init", "-q", "--bare", mirror)
+	if _, err := Run(ctx, r, Options{GitDir: mirror, Ref: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(git(t, mirror, "ls-tree", "-r", "main")); got != "160000 commit "+sha+"\tvendor/lib" {
+		t.Fatalf("exported tree = %q", got)
+	}
+
+	evil, _ := r.WriteBlob(ctx, []byte(sha+" vendor/lib\nM 100644 inline INJECTED.txt\ndata 3\nhi\n\nreset refs/tags/injected\nM 160000 "+sha))
+	raw := (&object.Changeset{Parents: []object.ID{c.ID}, Author: "Mallory <m@example.com>", Time: 1767196801, Message: "old pin",
+		Changes: []object.Change{{Path: "vendor/lib", Mode: object.ModeGitlink, Blob: evil}}}).Encode()
+	old := object.Hash(object.KindChangeset, raw)
+	if _, err := r.Meta.AppendChangeset(ctx, old, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Meta.CASRef(ctx, "main", c.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, r, Options{GitDir: mirror, Ref: "main"}); err == nil || !strings.Contains(err.Error(), "does not hold a commit ID") {
+		t.Fatalf("exporting a malformed submodule: %v", err)
+	}
+	if got := strings.TrimSpace(git(t, mirror, "for-each-ref", "--format=%(refname)")); got != "refs/heads/main" {
+		t.Fatalf("mirror refs after the refused export: %q", got)
+	}
+	if got := git(t, mirror, "ls-tree", "-r", "--name-only", "main"); strings.Contains(got, "INJECTED") {
+		t.Fatalf("mirror tree after the refused export: %s", got)
+	}
+}
+
 func TestIdentity(t *testing.T) {
 	for in, want := range map[string]string{
 		"Alice <a@example.com>": "Alice <a@example.com> 100 +0800",

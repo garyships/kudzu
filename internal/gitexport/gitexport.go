@@ -235,10 +235,14 @@ func (ex *exporter) write(ctx context.Context, gitDir string, order []object.ID)
 	in.Close()
 	waitErr := cmd.Wait()
 	gitRun(context.Background(), gitDir, nil, "update-ref", "-d", scratch)
-	if waitErr != nil {
+	switch {
+	case streamErr != nil && waitErr != nil:
+		// Usually one caused the other (a stream cut short, or a write to
+		// a fast-import that had died), so give both.
+		return fmt.Errorf("%w (git fast-import: %v: %s)", streamErr, waitErr, strings.TrimSpace(stderr.String()))
+	case waitErr != nil:
 		return fmt.Errorf("git fast-import: %v: %s", waitErr, strings.TrimSpace(stderr.String()))
-	}
-	if streamErr != nil {
+	case streamErr != nil:
 		return streamErr
 	}
 
@@ -298,8 +302,14 @@ func (ex *exporter) stream(ctx context.Context, w *bufio.Writer, scratch string,
 				return fmt.Errorf("%s: %w", ch.Path, err)
 			}
 			if ch.Mode == object.ModeGitlink {
-				// gitimport stores a submodule as a blob holding the commit sha.
-				mods = append(mods, fmt.Sprintf("M 160000 %s %s\n", strings.TrimSpace(string(content)), quotePath(ch.Path)))
+				// gitimport stores a submodule as a blob holding the commit
+				// ID, and Create accepts nothing else. The ID goes into the
+				// stream unquoted (fast-import has no inline form for it),
+				// so anything else would add commands of its own.
+				if !object.ValidGitlink(content) {
+					return fmt.Errorf("%s: submodule blob %s does not hold a commit ID", ch.Path, ch.Blob.Short())
+				}
+				mods = append(mods, fmt.Sprintf("M 160000 %s %s\n", content, quotePath(ch.Path)))
 				continue
 			}
 			m, ok := blobMarks[ch.Blob]

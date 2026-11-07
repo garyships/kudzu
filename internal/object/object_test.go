@@ -243,3 +243,17 @@ func BenchmarkVerify(b *testing.B) {
 		}
 	}
 }
+
+func TestValidGitlink(t *testing.T) {
+	sha1, sha256 := strings.Repeat("0a", 20), strings.Repeat("f9", 32)
+	for content, want := range map[string]bool{
+		sha1: true, sha256: true,
+		sha1 + "\n": false, " " + sha1: false, strings.ToUpper(sha1): false,
+		sha1[:39]: false, sha1 + "0": false, strings.Repeat("g", 40): false,
+		sha1 + "\nM 100644 inline x": false, "": false,
+	} {
+		if got := ValidGitlink([]byte(content)); got != want {
+			t.Errorf("ValidGitlink(%q) = %v, want %v", content, got, want)
+		}
+	}
+}
