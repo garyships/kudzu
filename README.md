@@ -180,6 +180,8 @@ kudzu write -r main -m "bump version" --land main VERSION=@./VERSION
 
 A unix socket only lets its owner connect (mode 0600), because whoever can connect can land changes and move refs. To share a daemon between users, put its socket in a directory that is not world-writable, nor inside one, and pass `--socket-mode 0660` (or `0666`). Clients refuse a socket that another user owns in a world-writable directory such as `/tmp`, or in a directory of theirs inside one, since any user could have created it first.
 
+Over TCP, anyone who can reach the port can read the repository and land, so give a server on TCP an access policy (`--auth`, see [DESIGN.md §10](docs/DESIGN.md)). Every tier also refuses cross-origin writes from web pages, and a tier on a loopback address answers only to `localhost` or an IP address, so a web page you visit cannot reach it.
+
 `scripts/demo.sh /path/to/git/repo` runs the whole flow end to end and prints each tier's cache statistics.
 
 </details>
@@ -201,7 +203,7 @@ The trade-off: with no packfiles or deltas, server storage was 79 MB, against 26
 
 ## Status
 
-Kudzu is a working prototype with a test suite: `go test -race ./...`. Imports are checked against `git ls-tree` and `git blame --first-parent`, and exports round-trip back to git. Also built: per-directory access control (`kudzu server --auth`), several stateless servers on Postgres and S3-compatible storage (`--meta`, `--objects`), garbage collection (`kudzu gc --store`) and lazily fetched FUSE checkouts that you can edit and commit from (`kudzu mount --writable`, built with `-tags fuse`). Not built yet:
+Kudzu is a working prototype with a test suite: `go test -race ./...`. Imports are checked against `git ls-tree` and `git blame --first-parent`, and exports round-trip back to git. Also built: per-directory access control (`kudzu server --auth`), several stateless servers on Postgres and S3-compatible storage (`--meta`, `--objects`), garbage collection (`kudzu gc --store`) and lazily fetched FUSE checkouts that you can edit and commit from (`kudzu mount --writable`, built with `-tags fuse`). v0.2.0 also fixes what a security review of every tier found; the [changelog](CHANGELOG.md) has each release's notes. Not built yet:
 - Spanner or CockroachDB metadata stores (Postgres works today)
 
 Contributions are welcome: [open an issue](https://github.com/garyships/kudzu/issues) or a pull request, and see [AGENTS.md](AGENTS.md) for a map of the code.

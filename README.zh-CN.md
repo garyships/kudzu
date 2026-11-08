@@ -112,7 +112,9 @@ kudzu commit -m "api: tweak" --land main  # 在服务端创建 changeset 并合�
 kudzu write -r main -m "bump" --land main VERSION=@./VERSION   # 完全不用工作区
 ```
 
-unix socket 默认只允许创建者自己连接（权限 0600），因为能连上的人就能 land 改动、移动 ref。想让多个用户共用一个 daemon，把 socket 放在不是所有人都可写的目录里，并加上 `--socket-mode 0660`（或 `0666`）。如果 socket 在 `/tmp` 这类所有人都可写的目录里、又属于别的用户，客户端会拒绝连接，因为任何用户都可能抢先创建它。
+unix socket 默认只允许创建者自己连接（权限 0600），因为能连上的人就能 land 改动、移动 ref。想让多个用户共用一个 daemon，把 socket 放在不是所有人都可写、也不在这样的目录之下的目录里，并加上 `--socket-mode 0660`（或 `0666`）。如果 socket 属于别的用户，又在 `/tmp` 这类所有人都可写的目录里，或者在这种目录下属于那个用户的子目录里，客户端会拒绝连接，因为任何用户都可能抢先创建它。
+
+走 TCP 时，任何能连上端口的人都能读仓库、land 改动，所以 TCP 上的服务端要配访问策略（`--auth`，见 [DESIGN.zh-CN.md 第 10 节](docs/DESIGN.zh-CN.md)）。每一层也都会拒绝网页发来的跨源写请求；监听回环地址的层只接受 Host 为 `localhost` 或 IP 地址的请求，所以你打开的网页连不上它。
 
 </details>
 
@@ -130,7 +132,7 @@ unix socket 默认只允许创建者自己连接（权限 0600），因为能连
 
 ## 现状
 
-Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入结果和 `git ls-tree`、`git blame --first-parent` 逐一核对过，导出也能完整回到 git。已经做了：按目录的权限控制（`kudzu server --auth`）、基于 Postgres 和兼容 S3 存储的多台无状态服务端（`--meta`、`--objects`）、垃圾回收（`kudzu gc --store`）、按需获取、可以直接编辑和提交的 FUSE checkout（`kudzu mount --writable`，用 `-tags fuse` 编译）。还没做：
+Kudzu 是一个可以运行的原型，测试用 `go test -race ./...`。导入结果和 `git ls-tree`、`git blame --first-parent` 逐一核对过，导出也能完整回到 git。已经做了：按目录的权限控制（`kudzu server --auth`）、基于 Postgres 和兼容 S3 存储的多台无状态服务端（`--meta`、`--objects`）、垃圾回收（`kudzu gc --store`）、按需获取、可以直接编辑和提交的 FUSE checkout（`kudzu mount --writable`，用 `-tags fuse` 编译）。v0.2.0 还修复了对每一层做安全审查时发现的问题，每个版本的说明见 [CHANGELOG](CHANGELOG.md)。还没做：
 - Spanner 或 CockroachDB 元数据存储（Postgres 已经可以用）
 
 ## 许可证

@@ -21,9 +21,29 @@ jobs:
           go-version: stable
           check-latest: true
       - run: go test ./...
+      # The release notes are the tag's section of CHANGELOG.md, so a tag
+      # without one fails here rather than publishing an empty release.
+      - name: release notes
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          awk -v tag="$GITHUB_REF_NAME" '$0 ~ /^## / { if (found) exit; found = ($2 == tag); next } found' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          cat >> "$notes" <<'EOF'
+          ## Install
+
+          ```
+          curl -fsSL https://raw.githubusercontent.com/garyships/kudzu/main/install.sh | sh
+          cd any-git-repo && kudzu up
+          ```
+
+          Binaries for macOS, Linux (amd64 and arm64) and Windows are attached below, with their SHA-256 sums in `checksums.txt`.
+          EOF
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes=${{ runner.temp }}/notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
