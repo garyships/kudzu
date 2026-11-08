@@ -30,7 +30,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/gitexport/` | Incremental export of a ref's history to a git repository through `git fast-import`. |
 | `internal/lru/` | Small generic LRU. |
 | `internal/e2e/` | Full-stack tests: server → cache → daemon (unix socket) → working copies, all in one process. |
-| `install.sh`, `.goreleaser.yaml` | The curl installer and the release build; pushing a `v*` tag runs `.github/workflows/release.yml`. |
+| `install.sh`, `.goreleaser.yaml`, `CHANGELOG.md` | The curl installer and the release build. Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes that version's `CHANGELOG.md` section as the release notes and fails if there is none. |
 | `scripts/demo.sh` | End-to-end demo against a real git repository. `scripts/record-demo/` renders the website's demo video. |
 | `docs/` | [DESIGN.md](docs/DESIGN.md) (English) and [DESIGN.zh-CN.md](docs/DESIGN.zh-CN.md), agent docs ([AI.md](docs/AI.md), [llms.txt](docs/llms.txt), [llms-full.txt](docs/llms-full.txt)) and the GitHub Pages site (`index.html`, `assets/`). |
 | `skills/kudzu/` | Agent Skill that teaches an agent to use Kudzu. |
@@ -78,6 +78,10 @@ KUDZU_REMOTE=127.0.0.1:7070 ./kudzu log -n 5 --oneline
 - Errors that reach users name the thing that failed. Conflicts carry the conflicting paths (`repo.ConflictError` → HTTP 409 → `proto.HTTPError.Conflicts`).
 - Remote resolution everywhere: `--remote` > `$KUDZU_REMOTE` > the working copy's recorded remote. Author: `--author` > `$KUDZU_AUTHOR` > `user <user@host>`. Token: `$KUDZU_TOKEN`, read by `proto.Dial` and never persisted.
 - New `/api` handlers that read a path check `auth.FromContext(ctx)` (a nil principal means auth is off), and any tree ID they return goes through `Server.viewTree`.
+- Handlers check what they can of the caller's permissions before reading a body, then read it with `decodeBody` and a limit sized for the endpoint. A 500 never carries the error's text, which can name storage keys: `Server.fail` logs it under a request ID.
+- Line-based work (blame, patches, merges) reads blobs with `Repo.readText`, which applies the `textdiff` size and line limits. Serve or count a blob's content with `Repo.CopyBlob` instead of reading it whole.
+- Anything found by walking up from the current directory may have been planted by another user. Find working copies and mounts with `client.Open` and `vfs.FindMount`, which only accept the nearest `.kudzu` and only if it is private, and dial a socket only you should serve with `proto.DialPrivate`.
+- User-visible changes get a line in `CHANGELOG.md`, in a `## Unreleased` section at the top that becomes `## vX.Y.Z (date)` when it is released.
 
 ## Design
 

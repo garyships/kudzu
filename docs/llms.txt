@@ -24,5 +24,6 @@ Agents can use Kudzu three ways: the `kudzu mcp` MCP server (tools such as `kudz
 ## Optional
 
 - [Website](https://garyships.github.io/kudzu/): overview and demo video
+- [Changelog](https://github.com/garyships/kudzu/blob/main/CHANGELOG.md): what changed in each release
 - [README in Chinese](https://github.com/garyships/kudzu/blob/main/README.zh-CN.md)
 - [Design in Chinese](https://github.com/garyships/kudzu/blob/main/docs/DESIGN.zh-CN.md)
