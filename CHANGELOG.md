@@ -1,6 +1,6 @@
 # Changelog
 
-Pushing a `v*` tag publishes that version's section below as its release notes.
+Releasing a version (pushing its `v*` tag, or running the release workflow on main with it) publishes its section below as the release notes.
 
 ## v0.2.0 (2026-11-08)
 
@@ -56,6 +56,7 @@ These may need a change on your side.
 ### Project
 
 - CI runs on Go 1.26 and stable, on Linux, macOS and Windows, with FUSE, Postgres and S3, staticcheck and govulncheck, and runs faster: parallel tests and a cache per job. (#9, #23)
+- Releases can be started from the Actions page: the release workflow tags main and publishes this changelog's section for the version. (#35, #36)
 
 ## v0.1.0 (2026-10-14)
 

@@ -30,7 +30,7 @@ Commits are changesets appended to a log; refs move by compare-and-swap, so land
 | `internal/gitexport/` | Incremental export of a ref's history to a git repository through `git fast-import`. |
 | `internal/lru/` | Small generic LRU. |
 | `internal/e2e/` | Full-stack tests: server → cache → daemon (unix socket) → working copies, all in one process. |
-| `install.sh`, `.goreleaser.yaml`, `CHANGELOG.md` | The curl installer and the release build. Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes that version's `CHANGELOG.md` section as the release notes and fails if there is none. |
+| `install.sh`, `.goreleaser.yaml`, `CHANGELOG.md` | The curl installer and the release build. `.github/workflows/release.yml` releases a pushed `v*` tag, or, run by hand on main with a version (Actions page, or `gh workflow run release -f version=v1.2.3`), tags main's tip and releases it. Either way it publishes that version's `CHANGELOG.md` section as the release notes and fails if there is none. |
 | `scripts/demo.sh` | End-to-end demo against a real git repository. `scripts/record-demo/` renders the website's demo video. |
 | `docs/` | [DESIGN.md](docs/DESIGN.md) (English) and [DESIGN.zh-CN.md](docs/DESIGN.zh-CN.md), agent docs ([AI.md](docs/AI.md), [llms.txt](docs/llms.txt), [llms-full.txt](docs/llms-full.txt)) and the GitHub Pages site (`index.html`, `assets/`). |
 | `skills/kudzu/` | Agent Skill that teaches an agent to use Kudzu. |

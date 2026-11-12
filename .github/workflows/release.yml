@@ -1,19 +1,53 @@
 name: release
 
+# Two ways to release:
+# - push a v* tag (git push origin v1.2.3);
+# - run this workflow on main from the Actions page, or with
+#   `gh workflow run release -f version=v1.2.3`: it tags main's tip itself,
+#   then releases it in the same run. (A tag pushed with the workflow's own
+#   token starts no other workflow, so nothing runs twice.)
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release from main's tip, like v1.2.3. CHANGELOG.md needs a section for it."
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # Everything that can fail runs before the tag is pushed, so a failed
+      # run leaves no tag behind.
+      - name: check the version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "release from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "the version must look like v1.2.3, not '$TAG'" >&2
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists" >&2
+            exit 1
+          fi
       # Build with the newest Go so that release binaries carry every
       # security fix; go.mod only sets the oldest version that works.
       - uses: actions/setup-go@v7
@@ -26,9 +60,9 @@ jobs:
       - name: release notes
         run: |
           notes="$RUNNER_TEMP/notes.md"
-          awk -v tag="$GITHUB_REF_NAME" '$0 ~ /^## / { if (found) exit; found = ($2 == tag); next } found' CHANGELOG.md > "$notes"
+          awk -v tag="$TAG" '$0 ~ /^## / { if (found) exit; found = ($2 == tag); next } found' CHANGELOG.md > "$notes"
           if ! grep -q '[^[:space:]]' "$notes"; then
-            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME" >&2
+            echo "CHANGELOG.md has no section for $TAG" >&2
             exit 1
           fi
           cat >> "$notes" <<'EOF'
@@ -41,6 +75,11 @@ jobs:
 
           Binaries for macOS, Linux (amd64 and arm64) and Windows are attached below, with their SHA-256 sums in `checksums.txt`.
           EOF
+      - name: tag main
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
