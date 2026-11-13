@@ -445,6 +445,21 @@ func (t *Tier) logf(format string, args ...any) {
 	}
 }
 
+// fullDuplex lets a proxied request's body be read while its response is
+// being written. By default net/http's server consumes and closes a request
+// body when the handler writes the response header, but the proxy's
+// transport may still be reading that body to send it upstream: after the
+// last byte it reads once more to confirm the end. That read then fails,
+// the transport closes the upstream connection, and the response the proxy
+// is copying ends early. Upstream handlers answer as soon as they have the
+// whole body, so this happened on ordinary requests.
+func fullDuplex(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NewResponseController(w).EnableFullDuplex() // HTTP/2 always is
+		h.ServeHTTP(w, r)
+	})
+}
+
 // Handler serves the object protocol locally and proxies the rest upstream.
 func (t *Tier) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -461,9 +476,10 @@ func (t *Tier) Handler() http.Handler {
 		FlushInterval: -1,
 		ErrorLog:      t.Log,
 	}
-	mux.Handle("/api/", proxy)
-	mux.Handle("POST /objects/missing", proxy)
-	mux.Handle("POST /objects/upload", proxy)
+	forward := fullDuplex(proxy)
+	mux.Handle("/api/", forward)
+	mux.Handle("POST /objects/missing", forward)
+	mux.Handle("POST /objects/upload", forward)
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(t.Stats())
