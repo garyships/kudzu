@@ -605,3 +605,47 @@ func TestSlowStatDoesNotStallOtherMisses(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestProxyRequestBodyRace: a proxied request whose upstream answers as
+// soon as it has the body gets its whole response. net/http's server
+// consumes and closes a request's body when the handler writes its response
+// header, while the proxy's transport may still make its last read of that
+// body to confirm the end; that read then failed, the transport closed the
+// upstream connection, and the response arrived cut short.
+func TestProxyRequestBodyRace(t *testing.T) {
+	reply := strings.Repeat("r", 256<<10)
+	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		io.WriteString(w, reply)
+	}))
+	defer upSrv.Close()
+	up, _ := proto.Dial(upSrv.URL)
+	srv := httptest.NewServer(New("cache", store.NewMem(1<<20), up, 2).Handler())
+	defer srv.Close()
+
+	body := strings.Repeat("b", 64<<10)
+	var wg sync.WaitGroup
+	var bad atomic.Int64
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				resp, err := http.Post(srv.URL+"/api/changesets", "application/json", strings.NewReader(body))
+				if err != nil {
+					bad.Add(1)
+					continue
+				}
+				b, err := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil || len(b) != len(reply) {
+					bad.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if n := bad.Load(); n > 0 {
+		t.Fatalf("%d of 800 proxied responses failed or were cut short", n)
+	}
+}

@@ -2,7 +2,7 @@
 
 Releasing a version (pushing its `v*` tag, or running the release workflow on main with it) publishes its section below as the release notes.
 
-## v0.2.0 (2026-11-08)
+## v0.2.0 (2026-11-13)
 
 Access control, shared backends, a git mirror, FUSE checkouts you can edit, and the fixes from a security review of every tier. Upgrade if you run v0.1.0: several fixes below close holes it has.
 
@@ -52,6 +52,7 @@ These may need a change on your side.
 - A mounted file is read once per open, not once per chunk. (#13)
 - Writable mounts no longer lose files named `*.kudzu-tmp`. (#30)
 - A submodule removed upstream no longer breaks `update`. (#29)
+- A cache or daemon no longer cuts a forwarded response short when the server answers as soon as it has the request. It showed as `unexpected EOF`, or an error with no message, from a commit or land through a tier, roughly once in a few hundred requests under load. (#37)
 
 ### Project
 
